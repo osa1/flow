@@ -27,10 +27,13 @@ struct BasicBlock_ {
     /// Every path from S0 (entry) to this block needs to visit these.
     dominators: BitSet,
 
-    /// Immediate dominator of the block. `ENTRY_BLOCK` doesn't have one.
+    /// Immediate dominator of the block. `ENTRY_BLOCK` doesn't have one. This
+    /// gives the parent in the dominator tree. Since `ENTRY_BLOCK` is the root,
+    /// it doesn't have an `immediate_dom`.
     immediate_dom: Option<usize>,
 
-    /// Blocks that have this block as immediate dominator.
+    /// Blocks that have this block as immediate dominator. This gives children
+    /// in the dominator tree.
     dom_tree_children: BitSet,
 
     /// Dominance frontier of the block.
@@ -130,6 +133,16 @@ impl CFG {
         BasicBlock(self.blocks[block.0].immediate_dom.unwrap())
     }
 
+    /// Children of the node in the dominator tree. TODO: Say more about what's
+    /// a dominator tree.
+    pub fn dom_tree_children(&self, block : BasicBlock) -> BasicBlockIter {
+        BasicBlockIter { bitset_iter: self.blocks[block.0].dom_tree_children.iter() }
+    }
+
+    pub fn dom_frontier(&self, block : BasicBlock) -> BasicBlockIter {
+        BasicBlockIter { bitset_iter: self.blocks[block.0].dom_frontier.iter() }
+    }
+
     /// Compute dominators, dominator tree, dominance frontier etc. DO NOT
     /// query those without calling this first.
     // TODO: We probably need a `CFGBuilder` type that returns an immutable
@@ -137,6 +150,7 @@ impl CFG {
     pub fn build(&mut self) {
         self.compute_doms();
         self.compute_imm_doms();
+        self.compute_df();
     }
 
     fn n_blocks(&self) -> usize {
@@ -147,6 +161,7 @@ impl CFG {
 // Actual computation
 
 impl CFG {
+    /// Compute dominators.
     fn compute_doms(&mut self) {
         let n_blocks = self.n_blocks();
 
@@ -202,6 +217,7 @@ impl CFG {
         changed
     }
 
+    /// Compute immediate dominators.
     fn compute_imm_doms(&mut self) {
 
         // Idea: Say we have `n` dominators. One of them should be the last one
@@ -247,6 +263,41 @@ impl CFG {
                 self.blocks[imm_dom].dom_tree_children.insert(i);
             }
         }
+    }
+
+    /// Compute dominance frontiers.
+    fn compute_df(&mut self) {
+        // TODO: I'm using a separate data structure to make borrow checker
+        // happy. There should be a better way -- need to do post-order
+        // traversal while mutating `self`.
+
+        let mut dfs : Vec<BitSet> = vec![BitSet::new(); self.n_blocks()];
+        self.compute_df_(ENTRY_BLOCK, &mut dfs);
+
+        for (b_idx, df) in dfs.into_iter().enumerate() {
+            self.blocks[b_idx].dom_frontier = df;
+        }
+    }
+
+    fn compute_df_(&self, block : BasicBlock, dfs : &mut Vec<BitSet>) {
+        let mut s = BitSet::new();
+
+        for succ in self.succs(block) {
+            if self.immediate_dom(succ) != block {
+                s.insert(succ.0);
+            }
+        }
+
+        for dom_child in self.dom_tree_children(block) {
+            self.compute_df_(dom_child, dfs);
+            for w in dfs[dom_child.0].iter() {
+                if !self.dominates(block, BasicBlock(w)) || block.0 == w {
+                    s.insert(w);
+                }
+            }
+        }
+
+        dfs[block.0] = s;
     }
 }
 
@@ -343,5 +394,53 @@ mod test {
         assert_eq!(cfg.immediate_dom(b10), b9);
         assert_eq!(cfg.immediate_dom(b11), b7);
         assert_eq!(cfg.immediate_dom(b12), b4);
+    }
+
+    #[test]
+    fn dom_test_3() {
+        // Figure 19.4
+        let mut cfg = CFG::new();
+        let b1  = cfg.new_block();
+        let b2  = cfg.new_block();
+        let b3  = cfg.new_block();
+        let b4  = cfg.new_block();
+        let b5  = cfg.new_block();
+        let b6  = cfg.new_block();
+        let b7  = cfg.new_block();
+
+        cfg.mk_pred(ENTRY_BLOCK, b1);
+        cfg.mk_pred(b1, b2);
+        cfg.mk_pred(b2, b3);
+        cfg.mk_pred(b2, b4);
+        cfg.mk_pred(b3, b5);
+        cfg.mk_pred(b3, b6);
+        cfg.mk_pred(b5, b7);
+        cfg.mk_pred(b6, b7);
+        cfg.mk_pred(b7, b2);
+
+        cfg.build();
+
+        assert_eq!(cfg.immediate_dom(b1), ENTRY_BLOCK);
+        assert_eq!(cfg.immediate_dom(b2), b1);
+        assert_eq!(cfg.immediate_dom(b3), b2);
+        assert_eq!(cfg.immediate_dom(b4), b2);
+        assert_eq!(cfg.immediate_dom(b5), b3);
+        assert_eq!(cfg.immediate_dom(b6), b3);
+        assert_eq!(cfg.immediate_dom(b7), b3);
+
+        assert_eq!(cfg.dom_frontier(b1).collect::<HashSet<BasicBlock>>(),
+                   set!());
+        assert_eq!(cfg.dom_frontier(b2).collect::<HashSet<BasicBlock>>(),
+                   set!(b2));
+        assert_eq!(cfg.dom_frontier(b3).collect::<HashSet<BasicBlock>>(),
+                   set!(b2));
+        assert_eq!(cfg.dom_frontier(b4).collect::<HashSet<BasicBlock>>(),
+                   set!());
+        assert_eq!(cfg.dom_frontier(b5).collect::<HashSet<BasicBlock>>(),
+                   set!(b7));
+        assert_eq!(cfg.dom_frontier(b6).collect::<HashSet<BasicBlock>>(),
+                   set!(b7));
+        assert_eq!(cfg.dom_frontier(b7).collect::<HashSet<BasicBlock>>(),
+                   set!(b2));
     }
 }
