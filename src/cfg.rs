@@ -1,7 +1,23 @@
 use bit_set::{BitSet};
 use bit_set;
 
+use std::collections::hash_map::Entry;
+use std::collections::hash_set;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::iter::Iterator;
+
+macro_rules! set {
+    ( $( $x:expr ),* ) => {
+        {
+            let mut ret = HashSet::new();
+            $(
+                ret.insert($x);
+            )*
+            ret
+        }
+    };
+}
 
 // Basic blocks are kept abstract and only manipulated via the CFG they belong.
 // Internally we don't use this type because we don't get required instances of
@@ -15,6 +31,10 @@ pub struct CFG {
     /// INVARIANT: There's at least one basic block: First block is the entry.
     blocks: Vec<BasicBlock_>,
 }
+
+/// Variables.
+#[derive(Copy, Clone)]
+pub struct Var(u32); // a variable goes by its unique integer
 
 #[derive(Debug)]
 struct BasicBlock_ {
@@ -38,6 +58,12 @@ struct BasicBlock_ {
 
     /// Dominance frontier of the block.
     dom_frontier: BitSet,
+
+    /// Variables defined in this block.
+    vars: HashSet<u32>,
+
+    /// Phi nodes in this block.
+    phis: HashSet<u32>,
 }
 
 #[derive(Clone)]
@@ -66,6 +92,8 @@ impl CFG {
                 immediate_dom: None,
                 dom_tree_children: BitSet::new(),
                 dom_frontier: BitSet::new(),
+                vars: HashSet::new(),
+                phis: HashSet::new(),
             }]
         }
     }
@@ -82,6 +110,8 @@ impl CFG {
             immediate_dom: None,
             dom_tree_children: BitSet::new(),
             dom_frontier: BitSet::new(),
+            vars: HashSet::new(),
+            phis: HashSet::new(),
         });
 
         BasicBlock(ret)
@@ -143,6 +173,14 @@ impl CFG {
         BasicBlockIter { bitset_iter: self.blocks[block.0].dom_frontier.iter() }
     }
 
+    pub fn has_phi(&self, block : BasicBlock, var : Var) -> bool {
+        self.blocks[block.0].phis.contains(&var.0)
+    }
+
+    pub fn insert_phi(&mut self, block : BasicBlock, var : Var) {
+        self.blocks[block.0].phis.insert(var.0);
+    }
+
     /// Compute dominators, dominator tree, dominance frontier etc. DO NOT
     /// query those without calling this first.
     // TODO: We probably need a `CFGBuilder` type that returns an immutable
@@ -151,6 +189,7 @@ impl CFG {
         self.compute_doms();
         self.compute_imm_doms();
         self.compute_df();
+        self.insert_phis();
     }
 
     fn n_blocks(&self) -> usize {
@@ -299,6 +338,53 @@ impl CFG {
 
         dfs[block.0] = s;
     }
+
+    /// Insert phi functions.
+    fn insert_phis(&mut self) {
+        // definition sites of variables
+        let mut defsites : HashMap<u32, HashSet<BasicBlock>> = HashMap::new();
+
+        // all variables defined in the cfg
+        let mut vars : HashSet<u32> = HashSet::new();
+
+        for block in 0 .. self.n_blocks() {
+            for var in self.blocks[block].vars.iter().cloned() {
+                vars.insert(var);
+
+                match defsites.entry(var) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(set!(BasicBlock(block)));
+                    },
+                    Entry::Occupied(mut entry) => {
+                        entry.get_mut().insert(BasicBlock(block));
+                    }
+                }
+            }
+        }
+
+        for var_ in vars.iter().cloned() {
+            let var = Var(var_);
+
+            // whenever node x contains a definition of some variable a, any
+            // node in the dominance frontier of x needs a phi for a
+            let mut workset = defsites.get(&var_).unwrap().clone();
+
+            while let Some(work) = { let v = workset.drain().next(); v } {
+                // redundant clone() here -- to make borrow checker happy
+                for dom_ in self.blocks[work.0].dom_frontier.clone().iter() {
+                    let dom = BasicBlock(dom_);
+                    if !self.has_phi(dom, var) {
+                        self.insert_phi(dom, var);
+                        // now that `dom` has a new definition, we need to work
+                        // it, to be able to update its dominance frontier
+                        if !defsites.get(&var_).unwrap().contains(&dom) {
+                            workset.insert(dom);
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -306,18 +392,6 @@ mod test {
     use super::*;
 
     use std::collections::HashSet;
-
-    macro_rules! set {
-        ( $( $x:expr ),* ) => {
-            {
-                let mut ret = HashSet::new();
-                $(
-                    ret.insert($x);
-                )*
-                ret
-            }
-        };
-    }
 
     #[test]
     fn dom_test_1() {
