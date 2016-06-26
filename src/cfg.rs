@@ -6,6 +6,7 @@ use std::collections::hash_set;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::iter::Iterator;
+use std::mem;
 
 macro_rules! set {
     ( $( $x:expr ),* ) => {
@@ -30,10 +31,13 @@ pub static ENTRY_BLOCK : BasicBlock = BasicBlock(0);
 pub struct CFG {
     /// INVARIANT: There's at least one basic block: First block is the entry.
     blocks: Vec<BasicBlock_>,
+
+    /// Number of variables defined in the CFG.
+    vars: u32,
 }
 
 /// Variables.
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct Var(u32); // a variable goes by its unique integer
 
 #[derive(Debug)]
@@ -94,7 +98,9 @@ impl CFG {
                 dom_frontier: BitSet::new(),
                 vars: HashSet::new(),
                 phis: HashSet::new(),
-            }]
+            }],
+
+            vars: 0,
         }
     }
 
@@ -115,6 +121,12 @@ impl CFG {
         });
 
         BasicBlock(ret)
+    }
+
+    pub fn new_var(&mut self) -> Var {
+        let ret = Var(self.vars);
+        self.vars += 1;
+        ret
     }
 
     /// Make `node1` a predecessor of `node2`. Also makes `node2` a successor of
@@ -179,6 +191,10 @@ impl CFG {
 
     pub fn insert_phi(&mut self, block : BasicBlock, var : Var) {
         self.blocks[block.0].phis.insert(var.0);
+    }
+
+    pub fn add_defined_var(&mut self, block : BasicBlock, var : Var) {
+        self.blocks[block.0].vars.insert(var.0);
     }
 
     /// Compute dominators, dominator tree, dominance frontier etc. DO NOT
@@ -367,18 +383,25 @@ impl CFG {
 
             // whenever node x contains a definition of some variable a, any
             // node in the dominance frontier of x needs a phi for a
-            let mut workset = defsites.get(&var_).unwrap().clone();
+            let mut next_workset = defsites.get(&var_).unwrap().clone();
+            let mut workset : HashSet<BasicBlock> = HashSet::new();
 
-            while let Some(work) = { let v = workset.drain().next(); v } {
-                // redundant clone() here -- to make borrow checker happy
-                for dom_ in self.blocks[work.0].dom_frontier.clone().iter() {
-                    let dom = BasicBlock(dom_);
-                    if !self.has_phi(dom, var) {
-                        self.insert_phi(dom, var);
-                        // now that `dom` has a new definition, we need to work
-                        // it, to be able to update its dominance frontier
-                        if !defsites.get(&var_).unwrap().contains(&dom) {
-                            workset.insert(dom);
+            while !next_workset.is_empty() {
+                mem::swap(&mut next_workset, &mut workset);
+
+                for work in workset.drain() {
+                    next_workset.remove(&work); // don't repeat work
+
+                    // redundant clone() here -- to make borrow checker happy
+                    for dom_ in self.blocks[work.0].dom_frontier.clone().iter() {
+                        let dom = BasicBlock(dom_);
+                        if !self.has_phi(dom, var) {
+                            self.insert_phi(dom, var);
+                            // now that `dom` has a new definition, we need to work
+                            // it, to be able to update its dominance frontier
+                            if !defsites.get(&var_).unwrap().contains(&dom) {
+                                next_workset.insert(dom);
+                            }
                         }
                     }
                 }
@@ -516,5 +539,47 @@ mod test {
                    set!(b7));
         assert_eq!(cfg.dom_frontier(b7).collect::<HashSet<BasicBlock>>(),
                    set!(b2));
+    }
+
+    #[test]
+    fn phi_test_1() {
+        // Figure 19.4
+        let mut cfg = CFG::new();
+        let b1  = cfg.new_block();
+        let b2  = cfg.new_block();
+        let b3  = cfg.new_block();
+        let b4  = cfg.new_block();
+        let b5  = cfg.new_block();
+        let b6  = cfg.new_block();
+        let b7  = cfg.new_block();
+
+        cfg.mk_pred(ENTRY_BLOCK, b1);
+        cfg.mk_pred(b1, b2);
+        cfg.mk_pred(b2, b3);
+        cfg.mk_pred(b2, b4);
+        cfg.mk_pred(b3, b5);
+        cfg.mk_pred(b3, b6);
+        cfg.mk_pred(b5, b7);
+        cfg.mk_pred(b6, b7);
+        cfg.mk_pred(b7, b2);
+
+        let var_i = cfg.new_var();
+        let var_j = cfg.new_var();
+        let var_k = cfg.new_var();
+
+        cfg.add_defined_var(b1, var_i);
+        cfg.add_defined_var(b1, var_j);
+        cfg.add_defined_var(b1, var_k);
+        cfg.add_defined_var(b5, var_j);
+        cfg.add_defined_var(b5, var_k);
+        cfg.add_defined_var(b6, var_j);
+        cfg.add_defined_var(b6, var_k);
+
+        cfg.build();
+
+        assert!(cfg.has_phi(b2, var_j));
+        assert!(cfg.has_phi(b2, var_k));
+        assert!(cfg.has_phi(b7, var_j));
+        assert!(cfg.has_phi(b7, var_k));
     }
 }
