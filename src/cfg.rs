@@ -60,7 +60,7 @@ struct BasicBlock_ {
     /// in the dominator tree.
     dom_tree_children: BitSet,
 
-    /// Dominance frontier of the block.
+    /// Dominance frontier of this block.
     dom_frontier: BitSet,
 
     /// Variables defined in this block.
@@ -279,7 +279,7 @@ impl CFG {
         // to visit when moving from entry to this node. That one is the
         // immediate dominator.
         //
-        // How to find it? Since it's last dominator to visit, it shouldn't
+        // How to find it? Since it's the last dominator to visit, it shouldn't
         // dominate any other dominators (Otherwise it wouldn't be last one to
         // visit). So just look at all the dominators, and find the one that
         // doesn't dominate any others.
@@ -288,7 +288,7 @@ impl CFG {
 
         let n_blocks = self.n_blocks();
 
-        for i in 1 .. n_blocks {
+        for i in 0 .. n_blocks {
             let mut immediate_dom : Option<usize> = None;
 
             'outer: // ugh
@@ -298,8 +298,10 @@ impl CFG {
 
                 // For all other dominators...
                 for dom_idx_1 in self.dominators(BasicBlock(i)) {
-                    if dom_idx == dom_idx_1 { continue; }
+                    // Skip self
                     if dom_idx_1.0 == i { continue; }
+                    // For all _other_ dominators, so skip dom_idx
+                    if dom_idx == dom_idx_1 { continue; }
 
                     if self.dominates(dom_idx, dom_idx_1) {
                         // it dominates some of the other dominators... skip

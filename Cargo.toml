@@ -2,6 +2,12 @@
 name = "flow"
 version = "0.1.0"
 authors = ["Ömer Sinan Ağacan <omeragacan@gmail.com>"]
+build = "build.rs"
+
+[build-dependencies]
+lalrpop = { git = "https://github.com/nikomatsakis/lalrpop.git" }
 
 [dependencies]
 bit-set = "0.4.0"
+rustlex = { git = "https://github.com/LeoTestard/rustlex.git" }
+lalrpop-util = { git = "https://github.com/nikomatsakis/lalrpop.git" }
