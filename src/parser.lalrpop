@@ -25,8 +25,8 @@ extern {
         "<"      => Token::LT,
         ">"      => Token::GT,
         "="      => Token::Assign,
-        "("      => Token::RParen,
-        ")"      => Token::LParen,
+        "("      => Token::LParen,
+        ")"      => Token::RParen,
         "{"      => Token::LBrace,
         "}"      => Token::RBrace,
         "["      => Token::LBracket,
@@ -120,36 +120,36 @@ pub StmtList : Vec<Box<Stmt>> = {
 // production for list of statements, which doesn't let statements start with
 // "(", when the previous statement is an assignment.
 //
-// Note also that this returns statement in reversed order! Reverse before use!
+// Note also that this returns statements in reversed order! Reverse before use!
+
 RevStmtList : Vec<Box<Stmt>> = {
-    <lhss:VarList1> "=" <es:Explist1> <stmts:RevStmtList1> => {
+    <stmt:Stmt1> <stmts:RevStmtList1> => {
         let mut stmts = stmts;
-        stmts.push(Box::new(Stmt::Assign {
-            lhss: lhss,
-            rhss: es,
-            is_local: false,
-        }));
-        stmts
-    },
-
-    "local" <lhss:Identlist1> "=" <es:Explist1> <stmts:RevStmtList1> => {
-        let mut stmts = stmts;
-        stmts.push(Box::new(Stmt::Assign {
-            lhss: lhss.into_iter().map(|v| Var::Var(v)).collect(),
-            rhss: es,
-            is_local: true,
-        }));
-        stmts
-    },
-
-    <fcall:FunCall> <stmts:RevStmtList1> => {
-        let mut stmts = stmts;
-        stmts.push(Box::new(Stmt::FunCall(fcall)));
+        stmts.push(stmt);
         stmts
     },
 
     <stmts:RevStmtList1> =>
         stmts
+};
+
+Stmt1 : Box<Stmt> = {
+    <lhss:VarList1> "=" <es:Explist1> =>
+        Box::new(Stmt::Assign {
+            lhss: lhss,
+            rhss: es,
+            is_local: false,
+        }),
+
+    "local" <lhss:Identlist1> "=" <es:Explist1>  =>
+        Box::new(Stmt::Assign {
+            lhss: lhss.into_iter().map(|v| Var::Var(v)).collect(),
+            rhss: es,
+            is_local: true,
+        }),
+
+    <fcall:FunCall> =>
+        Box::new(Stmt::FunCall(fcall))
 };
 
 // Every statement except function call.
@@ -284,10 +284,10 @@ ElseIfBlock : (Box<Exp>, Block) = {
 };
 
 pub Block : Block = {
-    <stmts:StmtList> "return" <exps:Explist> =>
+    <stmts:StmtList> <mb_ret:("return" <Explist>)?> =>
         Block {
             stmts: stmts,
-            mb_ret: Some(exps),
+            mb_ret: mb_ret,
         },
 };
 
