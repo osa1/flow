@@ -1,39 +1,40 @@
-// use var::Var;
+pub type Id = String;
 
-pub type Var = String;
-
+#[derive(Debug)]
 pub struct Block {
     pub stmts:  Vec<Box<Stmt>>,
     pub mb_ret: Option<Vec<Box<Exp>>>,
 }
 
+#[derive(Debug)]
 pub enum Stmt {
     Assign {
-        lhs: LHS,
-        rhs: Vec<Box<Exp>>,
+        lhss: Vec<Var>,
+        rhss: Vec<Box<Exp>>,
+        is_local: bool,
     },
 
-    FunCall(FunCall),
-
-    Label(String),
-
-    Break,
-
-    Goto(String),
-
-    Do(Block),
-
-    While(Box<Exp>, Block),
-
-    Repeat(Block, Box<Exp>),
-
+    // Conditional
     If {
         conds: Vec<(Box<Exp>, Block)>,
-        else_: Option<(Box<Exp>, Block)>,
+        else_: Option<Block>,
     },
 
+    // Function call
+    FunCall(FunCall),
+
+    // Goto
+    Label(String),
+    Goto(String),
+
+    // Looping
+    Do(Block),
+    While(Box<Exp>, Block),
+    Repeat(Block, Box<Exp>),
+    Break,
+
     ForRange {
-        var:   Var,
+        var:   Id,
         start: Box<Exp>,
         end:   Box<Exp>,
         step:  Option<Box<Exp>>,
@@ -41,17 +42,19 @@ pub enum Stmt {
     },
 
     ForIn {
-        vars: Vec<Var>,
+        vars: Vec<Id>,
         exps: Vec<Box<Exp>>,
         body: Block,
     },
 }
 
-pub enum LHS {
-    FieldLHS(Vec<String>),
-    VarLHS(Var),
+#[derive(Debug)]
+pub enum Var {
+    Var(Id),
+    Select(Box<Exp>, Box<Exp>),
 }
 
+#[derive(Debug)]
 pub enum Exp {
     Nil,
     Bool(bool),
@@ -61,7 +64,7 @@ pub enum Exp {
     Vararg,
 
     FunDef {
-        args:   Vec<Var>,
+        args:   Vec<Id>,
         vararg: bool,
         body:   Block,
     },
@@ -82,6 +85,7 @@ pub enum Exp {
 //     Float(f64),
 // }
 
+#[derive(Debug)]
 pub enum TblField {
     /// [exp] = exp
     ExpField {
@@ -98,25 +102,20 @@ pub enum TblField {
     Field(Box<Exp>),
 }
 
+#[derive(Debug)]
 pub enum FunCall {
-    MethodCall {
-        obj:   Box<Exp>,
-        mname: String,
-        args:  Vec<Box<Exp>>,
-    },
-
-    FunCall {
-        fun:  Box<Exp>,
-        args: Vec<Box<Exp>>,
-    },
+    FunCall(Box<Exp>, Vec<Box<Exp>>),
+    MethodCall(Box<Exp>, String, Vec<Box<Exp>>),
 }
 
+#[derive(Debug)]
 pub enum Binop {
     Add, Sub, Mul, Div, Exp, Mod, Concat,
     LT, LTE, GT, GTE, EQ, NEQ, And, Or,
     IDiv, ShiftL, ShiftR, BAnd, BOr, BXor
 }
 
+#[derive(Debug)]
 pub enum Unop {
     Neg, Not, Len, Complement
 }

@@ -1,9 +1,13 @@
 use std::str::FromStr;
 
-use lexer::Token;
 use ast::*;
+use lexer::Token;
 
 #[LALR] grammar;
+
+////////////////////////////////////////////////////////////////////////////////
+// Lexer interface
+////////////////////////////////////////////////////////////////////////////////
 
 extern {
     enum Token {
@@ -70,28 +74,11 @@ extern {
     }
 }
 
-pub Stmt : Box<Stmt> = {
-    "break" =>
-        Box::new(Stmt::Break),
+////////////////////////////////////////////////////////////////////////////////
+// Utilities
+////////////////////////////////////////////////////////////////////////////////
 
-    "::" <l:Ident> "::" =>
-        Box::new(Stmt::Label(l)),
-
-    "do" <b:Block> "end" =>
-        Box::new(Stmt::Do(b)),
-};
-
-pub Block : Block = {
-    <stmts:Stmt*> "return" <exps:Explist> =>
-        Block {
-            stmts: stmts,
-            mb_ret: Some(exps),
-        }
-};
-
-pub Explist = Comma<Exp1>;
-pub Varlist = Comma<Ident>;
-
+// Zero or more things separated by a comma.
 Comma<T> : Vec<T> = {
     <v:(<T> ",")*> <e:T?> =>
         match e {
@@ -103,6 +90,216 @@ Comma<T> : Vec<T> = {
             }
         }
 };
+
+// One or more things separated by a comma.
+Comma1<T> : Vec<T> = {
+    <v:(<T> ",")*> <e:T> => {
+        let mut v = v;
+        v.push(e);
+        v
+    },
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// Statements
+////////////////////////////////////////////////////////////////////////////////
+
+pub StmtList : Vec<Box<Stmt>> = {
+    <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        stmts.reverse();
+        stmts
+    },
+};
+
+// Because of the ambiguity (Lua 5.3.1 manual chapter 3.3.1) in e.g.
+//
+//   local x = f(a)(b)
+//
+// Which can be parsed as one statement or two statements, we need a special
+// production for list of statements, which doesn't let statements start with
+// "(", when the previous statement is an assignment.
+//
+// Note also that this returns statement in reversed order! Reverse before use!
+RevStmtList : Vec<Box<Stmt>> = {
+    <lhss:VarList1> "=" <es:Explist1> <stmts:RevStmtList1> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::Assign {
+            lhss: lhss,
+            rhss: es,
+            is_local: false,
+        }));
+        stmts
+    },
+
+    "local" <lhss:Identlist1> "=" <es:Explist1> <stmts:RevStmtList1> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::Assign {
+            lhss: lhss.into_iter().map(|v| Var::Var(v)).collect(),
+            rhss: es,
+            is_local: true,
+        }));
+        stmts
+    },
+
+    <fcall:FunCall> <stmts:RevStmtList1> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::FunCall(fcall)));
+        stmts
+    },
+
+    <stmts:RevStmtList1> =>
+        stmts
+};
+
+// Every statement except function call.
+RevStmtList1 : Vec<Box<Stmt>> = {
+    "local" <lhss:Identlist1> <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::Assign {
+            lhss: lhss.into_iter().map(|v| Var::Var(v)).collect(),
+            rhss: vec![],
+            is_local: true,
+        }));
+        stmts
+    },
+
+    ";" <stmts:RevStmtList> =>
+        stmts,
+
+    "::" <l:Ident> "::" <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::Label(l)));
+        stmts
+    },
+
+    "break" <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::Break));
+        stmts
+    },
+
+    "do" <b:Block> "end" <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::Do(b)));
+        stmts
+    },
+
+    "while" <e:Exp1> "do" <b:Block> "end" <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::While(e, b)));
+        stmts
+    },
+
+    "repeat" <b:Block> "until" <e:Exp1> "end" <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::Repeat(b, e)));
+        stmts
+    },
+
+    "if" <e1:Exp1> "then" <b1:Block>
+            <conds:ElseIfBlock*>
+            <else_block:("else" <Block>)?>
+            "end"
+            <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        let mut conds = conds;
+        conds.insert(0, (e1, b1));
+        stmts.push(Box::new(Stmt::If { conds: conds, else_: else_block }));
+        stmts
+    },
+
+    "for" <v:Ident> "=" <e1:Exp> "," <e2:Exp> <e3:("," <Exp>)?> "do" <b:Block> "end"
+            <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::ForRange {
+            var: v,
+            start: e1,
+            end: e2,
+            step: e3,
+            body: b,
+        }));
+        stmts
+    },
+
+    "for" <v:Identlist1> "in" <es:Explist1> "do" <b:Block> "end" <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        stmts.push(Box::new(Stmt::ForIn {
+            vars: v,
+            exps: es,
+            body: b,
+        }));
+        stmts
+    },
+
+    "function" <n1:Ident> <ns:("." <Ident>)*> <mname:(":" <Ident>)?> <fundef:FunDef>
+            <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        let mut ns = ns;
+
+        let lhs = {
+            match ns.pop() {
+                None => Var::Var(n1),
+                Some(last_field) => {
+                    Var::Select(
+                        ns.into_iter().fold(Box::new(Exp::Var(Var::Var(n1))), |e, f| {
+                            Box::new(Exp::Var(Var::Select(e, Box::new(Exp::Var(Var::Var(f))))))
+                        }),
+                        Box::new(Exp::Var(Var::Var(last_field))))
+                }
+            }
+        };
+
+        let rhs = Box::new(Exp::FunDef {
+            args: fundef.0,
+            vararg: fundef.1,
+            body: fundef.2,
+        });
+
+        stmts.push(Box::new(Stmt::Assign {
+            lhss: vec![lhs],
+            rhss: vec![rhs],
+            is_local: false,
+        }));
+
+        stmts
+    },
+
+    "local" "function" <n:Ident> <fundef:FunDef> <stmts:RevStmtList> => {
+        let mut stmts = stmts;
+        let lhs = Var::Var(n);
+        let rhs = Box::new(Exp::FunDef {
+            args: fundef.0,
+            vararg: fundef.1,
+            body: fundef.2,
+        });
+
+        stmts
+    },
+};
+
+ElseIfBlock : (Box<Exp>, Block) = {
+    "elseif" <e:Exp> "then" <b:Block> =>
+        (e, b)
+};
+
+pub Block : Block = {
+    <stmts:StmtList> "return" <exps:Explist> =>
+        Block {
+            stmts: stmts,
+            mb_ret: Some(exps),
+        },
+};
+
+Explist    = Comma<Exp1>;
+Explist1   = Comma1<Exp1>;
+Identlist  = Comma<Ident>;
+Identlist1 = Comma1<Ident>;
+VarList1   = Comma1<Var>;
+
+////////////////////////////////////////////////////////////////////////////////
+// Expressions
+////////////////////////////////////////////////////////////////////////////////
 
 pub Exp : Box<Exp> = Exp1;
 
@@ -267,47 +464,58 @@ Exp13 : Box<Exp> = {
     "..." =>
         Box::new(Exp::Vararg),
 
-    "function" "(" <args:Varlist> <mb_vararg:"..."?> ")" <b:Block> "end" =>
+    "function" <fundef:FunDef> =>
         Box::new(Exp::FunDef {
-            args: args,
-            vararg: mb_vararg.is_some(),
-            body: b,
+            args: fundef.0,
+            vararg: fundef.1,
+            body: fundef.2,
         }),
 
-    <e:PrefixExp> <args:FunArgs> =>
-        Box::new(Exp::FunCall(FunCall::FunCall {
-            fun: e,
-            args: args
-        })),
+    <e:PrefixExp> =>
+        e,
 };
 
+// TODO: Should I make this right-recursive instead?
 PrefixExp : Box<Exp> = {
-    <v:Ident> =>
+    <v:Var> =>
         Box::new(Exp::Var(v)),
+
+    <fc:FunCall> =>
+        Box::new(Exp::FunCall(fc)),
 
     "(" <e:Exp1> ")" =>
         e,
-
-    <e:FunCall> =>
-        Box::new(Exp::FunCall(e)),
 };
 
-FunCall : FunCall = {
-    <f:PrefixExp> <args:FunArgs> =>
-        FunCall::FunCall {
-            fun: f,
-            args: args,
-        },
+////////////////////////////////////////////////////////////////////////////////
+// Re-used parts
+////////////////////////////////////////////////////////////////////////////////
 
-    <obj:PrefixExp> ":" <mname:Ident> <args:FunArgs> =>
-        FunCall::MethodCall {
-            obj: obj,
-            mname: mname,
-            args: args,
-        },
+FunDef : (Vec<Id>, bool, Block) = {
+    "(" <args:Identlist> <mb_vararg:"..."?> ")" <b:Block> "end" =>
+        (args, mb_vararg.is_some(), b)
 };
 
 FunArgs : Vec<Box<Exp>> = {
     "(" <es:Explist> ")" =>
         es,
+};
+
+FunCall : FunCall = {
+    <e1:PrefixExp> <args:FunArgs> =>
+        FunCall::FunCall(e1, args),
+
+    <e1:PrefixExp> ":" <mname:Ident> <args:FunArgs> =>
+        FunCall::MethodCall(e1, mname, args),
+};
+
+Var : Var = {
+    <i:Ident> =>
+        Var::Var(i),
+
+    <e1:PrefixExp> "[" <e2:Exp1> "]" =>
+        Var::Select(e1, e2),
+
+    <e1:PrefixExp> "." <i:Ident> =>
+        Var::Select(e1, Box::new(Exp::String(i.into_bytes()))),
 };
