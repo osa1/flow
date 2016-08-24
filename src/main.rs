@@ -4,7 +4,6 @@
 #[allow(plugin_as_library)] extern crate rustlex;
 
 extern crate bit_set;
-extern crate lalrpop_util;
 
 mod ast;
 mod cfg;
@@ -33,8 +32,8 @@ fn main() {
         let lexer = lexer::Lexer::new(inp);
         let tokens : Vec<lexer::Token> = lexer.collect();
         println!("tokens: {:?}", tokens);
-        let mb_ast : Result<Vec<Box<ast::Stmt>>, lalrpop_util::ParseError<(),lexer::Token,()>> =
-            parser::parse_StmtList(tokens);
-        println!("ast: {:?}", mb_ast);
+        // let mb_ast : Result<Vec<Box<ast::Stmt>>, lalrpop_util::ParseError<(),lexer::Token,()>> =
+        //     parser::parse_StmtList(tokens);
+        // println!("ast: {:?}", mb_ast);
     }
 }

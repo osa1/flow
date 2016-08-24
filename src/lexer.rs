@@ -1,4 +1,4 @@
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub enum Token {
     Plus,              // +
     Minus,             // -
@@ -60,6 +60,9 @@ pub enum Token {
     Num(String),       // number constant
     SLit(Vec<u8>),     // string constant
     Ident(String),     // identifier
+
+    /// End-of-stream. Used in the parser. Lexer doesn't generate this.
+    EOS,
 }
 
 macro_rules! tok {
