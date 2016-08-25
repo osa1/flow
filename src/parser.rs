@@ -6,20 +6,6 @@ pub struct Parser<'a> {
     pos: usize,
 }
 
-enum SuffixedExp {
-    Var(Var),
-    FunCall(FunCall),
-}
-
-impl SuffixedExp {
-    pub fn to_exp(self) -> Exp {
-        match self {
-            SuffixedExp::Var(v) => Exp::Var(v),
-            SuffixedExp::FunCall(fc) => Exp::FunCall(fc),
-        }
-    }
-}
-
 /// Can the given token follow a statement? Useful when terminating statement
 /// lists etc.
 fn stat_follow(tok : &Token) -> bool {
@@ -50,7 +36,7 @@ impl<'a> Parser<'a> {
     /// Skip the given token or fail if it's not found.
     fn expect_tok(&mut self, tok : Token) {
         if self.ts[self.pos] != tok {
-            panic!("Unexpected token");
+            panic!("Unexpected token. Expected {:?}, found {:?}", tok, self.cur_tok_());
         }
         self.skip();
     }
@@ -77,9 +63,9 @@ impl<'a> Parser<'a> {
             Token::Repeat => { self.skip(); self.repeatstat() },
             Token::Function => { self.skip(); self.funcstat() },
             Token::Local => {
-                self.skip();
+                self.skip(); // skip "local"
                 match self.cur_tok() {
-                    Token::Function => self.localfuncstat(),
+                    Token::Function => { self.skip(); self.localfuncstat() },
                     _ => self.localstat(),
                 }
             },
@@ -96,12 +82,13 @@ impl<'a> Parser<'a> {
         // parse initial condition
         conds.push(self.cond_then());
         // parse elseif blocks
-        while self.cur_tok() == Token::ElseIf {
+        while self.cur_tok_() == &Token::ElseIf {
             self.skip(); // skip elseif
             conds.push(self.cond_then());
         }
         // parse optional else block
-        let else_ = if self.cur_tok() == Token::Else {
+        let else_ = if self.cur_tok_() == &Token::Else {
+            self.skip(); // skip else
             Some(self.block())
         } else {
             None
@@ -143,7 +130,7 @@ impl<'a> Parser<'a> {
     fn forstat(&mut self) -> Box<Stmt> {
         let var1 = self.name();
         match self.cur_tok() {
-            Token::Equal => self.fornum(var1),
+            Token::Assign => { self.skip(); self.fornum(var1) },
             Token::Comma | Token::In => self.forlist(var1),
             _ => panic!("Syntax error in for statement"),
         }
@@ -163,7 +150,7 @@ impl<'a> Parser<'a> {
         self.expect_tok(Token::Comma);
         let end = self.exp();
         let step = {
-            if self.cur_tok() == Token::Comma {
+            if self.cur_tok_() == &Token::Comma {
                 self.skip();
                 Some(self.exp())
             } else {
@@ -171,6 +158,7 @@ impl<'a> Parser<'a> {
             }
         };
 
+        self.expect_tok(Token::Do);
         let body = self.block();
         self.expect_tok(Token::End);
 
@@ -187,16 +175,18 @@ impl<'a> Parser<'a> {
     fn forlist(&mut self, var1 : Id) -> Box<Stmt> {
         let mut vars = vec![var1];
         while self.cur_tok_() == &Token::Comma {
+            self.skip(); // skip ,
             vars.push(self.name());
-            self.pos += 1;
         }
+
+        println!("parsed names: {:?}", vars);
 
         self.expect_tok(Token::In);
 
         let mut exps = vec![self.exp()];
         while self.cur_tok_() == &Token::Comma {
+            self.skip(); // skip ,
             exps.push(self.exp());
-            self.pos += 1;
         }
 
         let body = self.forbody();
@@ -271,7 +261,7 @@ impl<'a> Parser<'a> {
         (n1, fs, mname)
     }
 
-    // function <name> <fundef>
+    // <name> <fundef>
     fn localfuncstat(&mut self) -> Box<Stmt> {
         let fname = self.name();
         let (args, vararg, body) = self.fundef();
@@ -342,20 +332,20 @@ impl<'a> Parser<'a> {
 
     // function call or assignment. Both start with a <prefixexp>.
     fn exprstat(&mut self) -> Box<Stmt> {
-        match self.suffixedexp() {
-            SuffixedExp::Var(var) => {
+        match *self.suffixedexp() {
+            Exp::Var(var) => {
                 // assignment
                 let mut varlist = vec![var];
                 while &self.ts[self.pos] == &Token::Comma {
                     self.pos += 1;
-                    match self.suffixedexp() {
-                        SuffixedExp::Var(var) => varlist.push(var),
-                        SuffixedExp::FunCall(_) => panic!("exprstat"),
+                    match *self.suffixedexp() {
+                        Exp::Var(var) => varlist.push(var),
+                        _ => panic!("exprstat"),
                     }
                 }
 
                 // not a "local" assignment, so a '= <exp>' has to follow
-                self.expect_tok(Token::Equal);
+                self.expect_tok(Token::Assign);
                 let mut explist = vec![self.exp()];
                 while &self.ts[self.pos] == &Token::Comma {
                     explist.push(self.exp());
@@ -367,47 +357,45 @@ impl<'a> Parser<'a> {
                     is_local: false,
                 })
             },
-            SuffixedExp::FunCall(fc) => {
+            Exp::FunCall(fc) => {
                 // function call
                 Box::new(Stmt::FunCall(fc))
             },
+            _ => panic!("exprstat"),
         }
     }
 
     // <funcall> or <var>
-    fn suffixedexp(&mut self) -> SuffixedExp {
-        let e0 = self.exp0();
-        println!("suffixedexp e0: {:?}", e0);
-        match self.cur_tok() {
-            Token::LParen | Token::SLit(_) | Token::LBrace | Token::Colon => {
-                // function or method call
-                // TODO: we redundantly copy string literals here
-                println!("suffixedexp parsing a funcall {:?}", e0);
-                SuffixedExp::FunCall(self.funcall(e0))
-            },
-            Token::Dot => {
-                // field selection
-                self.skip(); // consume .
-                let name = self.name();
-                SuffixedExp::Var(Var::Select(e0, Box::new(Exp::String(name.into_bytes()))))
-            },
-            Token::LBracket => {
-                // field selection
-                self.skip(); // consume [
-                let field = self.exp();
-                self.expect_tok(Token::RBracket);
-                SuffixedExp::Var(Var::Select(e0, field))
-            },
-            Token::EOS => {
-                match *e0 {
-                    Exp::Var(v) => SuffixedExp::Var(v),
-                    Exp::FunCall(fc) => SuffixedExp::FunCall(fc),
-                    _ => panic!("suffixedexp: unexpected end of stream"),
-                }
-            },
-            tok =>
-                panic!("suffixedexp: unexpected token: {:?}", tok),
+    fn suffixedexp(&mut self) -> Box<Exp> {
+        let mut e0 = self.exp0();
+
+        loop {
+            println!("suffixedexp e0: {:?}", e0);
+            match self.cur_tok() {
+                Token::LParen | Token::SLit(_) | Token::LBrace | Token::Colon => {
+                    // function or method call
+                    // TODO: we redundantly copy string literals here
+                    println!("suffixedexp parsing a funcall {:?}", e0);
+                    e0 = Box::new(Exp::FunCall(self.funcall(e0)))
+                },
+                Token::Dot => {
+                    // field selection
+                    self.skip(); // consume .
+                    let name = self.name();
+                    e0 = Box::new(Exp::Var(Var::Select(e0, Box::new(Exp::String(name.into_bytes())))))
+                },
+                Token::LBracket => {
+                    // field selection
+                    self.skip(); // consume [
+                    let field = self.exp();
+                    self.expect_tok(Token::RBracket);
+                    e0 = Box::new(Exp::Var(Var::Select(e0, field)))
+                },
+                _ => { break; }
+            }
         }
+
+        e0
     }
 }
 
@@ -497,23 +485,24 @@ impl<'a> Parser<'a> {
                 Box::new(Exp::FunDef { args: args, vararg: vararg, body: body })
             },
             _ =>
-                Box::new(self.suffixedexp().to_exp()),
+                self.suffixedexp(),
         }
     }
 
     // [fieldlist] '}'
     fn constructor(&mut self) -> Box<Exp> {
+        println!("constructor");
         let mut fields = vec![];
 
         if &self.ts[self.pos] != &Token::RBrace {
             fields.push(self.field());
-            while &self.ts[self.pos] == &Token::Comma
-                || &self.ts[self.pos] == &Token::Semic {
+            while self.cur_tok_() == &Token::Comma || self.cur_tok_() == &Token::Semic {
+                self.skip(); // skip , or ;
+                // we may have encountered trailing , or ;
+                if self.cur_tok_() == &Token::RBrace { break; }
+                // otherwise parse a field
                 fields.push(self.field());
             }
-            // skip optional trailing comma
-            if &self.ts[self.pos] == &Token::Comma
-                || &self.ts[self.pos] == &Token::Semic { self.skip(); }
         }
 
         self.expect_tok(Token::RBrace);
@@ -530,14 +519,16 @@ impl<'a> Parser<'a> {
                 let e2 = self.exp();
                 TblField::ExpField { lhs: e1, rhs: e2 }
             },
-            &Token::Ident(ref n) => {
+            &Token::Ident(ref n) if &self.ts[self.pos + 1] == &Token::Assign => {
                 self.skip(); // skip identifier
                 self.expect_tok(Token::Assign);
                 let e2 = self.exp();
                 TblField::NamedField { lhs: n.to_owned(), rhs: e2 }
             },
-            _ =>
+            _ => {
+                println!("field");
                 TblField::Field(self.exp())
+            }
         }
 
     }
@@ -563,7 +554,7 @@ impl<'a> Parser<'a> {
     // function or method call.
     // <funargs> | : <name> <funargs>
     fn funcall(&mut self, f : Box<Exp>) -> FunCall {
-        match &self.ts[self.pos] {
+        match self.cur_tok_() {
             &Token::Colon => {
                 self.skip();
                 let mname = self.name();
@@ -585,8 +576,12 @@ impl<'a> Parser<'a> {
         match self.cur_tok() {
             Token::LParen => {
                 self.skip(); // skip (
-                args.push(self.exp());
-                while self.cur_tok() == Token::Comma {
+                // first arg, if exists
+                if self.cur_tok_() != &Token::RParen {
+                    args.push(self.exp());
+                }
+                // other args
+                while self.cur_tok_() == &Token::Comma {
                     self.skip(); // skip ,
                     args.push(self.exp());
                 }
@@ -610,8 +605,12 @@ impl<'a> Parser<'a> {
 
     pub fn block(&mut self) -> Block {
         let mut stats = vec![];
-        while !stat_follow(&self.cur_tok()) {
-            stats.push(self.stat());
+        while !stat_follow(self.cur_tok_()) {
+            if self.cur_tok_() == &Token::Semic {
+                self.skip();
+            } else {
+                stats.push(self.stat());
+            }
         }
         stats
     }
@@ -623,7 +622,7 @@ impl<'a> Parser<'a> {
 
 impl<'a> Parser<'a> {
 
-    // ( <idlist> [, ...] ) <block>
+    // ( <idlist> [, ...] ) <block> end
     fn fundef(&mut self) -> (Vec<Id>, bool, Block) {
         self.expect_tok(Token::LParen);
 
@@ -650,6 +649,7 @@ impl<'a> Parser<'a> {
 
         self.expect_tok(Token::RParen);
         let block = self.block();
+        self.expect_tok(Token::End);
 
         (args, vararg, block)
     }

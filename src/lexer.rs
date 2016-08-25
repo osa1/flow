@@ -1,3 +1,5 @@
+use std;
+
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub enum Token {
     Plus,              // +
@@ -86,6 +88,9 @@ rustlex! Lexer {
     // Size of string or comment delimiters. E.g. 4 in `[==[`.
     property delim_size : usize = 0;
 
+    // String buffer used when reading long strings.
+    property string_buf : String = String::new();
+
     // variables are "letters, digits, and underscores, not beginning with a
     // digit and not being a reserved word"
     let LETTER   = ['a'-'z''A'-'Z'];
@@ -94,12 +99,15 @@ rustlex! Lexer {
     let VAR_CHAR = (LETTER | DIGIT | '_');
     let VAR      = VAR_INIT VAR_CHAR*;
 
-    let STR      = '"' ([^'\\''"']|'\\'.)* '"' ;
+    let DSTR     = '"' ([^'\\''"']|'\\'.)* '"' ;
+    let SSTR     = '\'' ([^'\\''\'']|'\\'.)* '\'' ;
 
     COMMENT {
-        . => skip!()
+        . => |l : &mut Lexer<R>| {
+            None
+        }
 
-        ']' '='+ ']' => |l : &mut Lexer<R>| {
+        ']' '='* ']' => |l : &mut Lexer<R>| {
             if l.yystr().len() == l.delim_size {
                 l.INITIAL();
                 None
@@ -109,20 +117,48 @@ rustlex! Lexer {
         }
     }
 
+    STRING {
+        . => |l : &mut Lexer<R>| {
+            // TODO: This is inefficient
+            let str = l.yystr();
+            l.string_buf.push_str(&str);
+            None
+        }
+
+        ']' '='* ']' => |l : &mut Lexer<R>| {
+            if l.yystr().len() == l.delim_size {
+                l.INITIAL();
+                Some(Token::SLit(
+                        std::mem::replace(&mut l.string_buf, String::new()).into_bytes()))
+            } else {
+                // TODO: This is inefficient
+                let str = l.yystr();
+                l.string_buf.push_str(&str);
+                None
+            }
+        }
+    }
+
     INITIAL {
         . => skip!()
 
-        // Comments
-        '[' '='+ '[' => |l : &mut Lexer<R>| {
-            l.delim_size = l.yystr().len() - 2;
-            l.COMMENT();
-            None
-        }
 
         "--" [^'\n']+ => skip!()
 
         // Strings. TODO: incomplete
-        STR         => |l : &mut Lexer<R>| { Some(Token::SLit(l.yystr().into_bytes())) }
+        DSTR         => |l : &mut Lexer<R>| { Some(Token::SLit(l.yystr().into_bytes())) }
+        SSTR         => |l : &mut Lexer<R>| { Some(Token::SLit(l.yystr().into_bytes())) }
+        '[' '='* '[' => |l : &mut Lexer<R>| {
+            l.delim_size = l.yystr().len();
+            l.STRING();
+            None
+        }
+
+        "--" '[' '='* '[' => |l : &mut Lexer<R>| {
+            l.delim_size = l.yystr().len();
+            l.COMMENT();
+            None
+        }
 
         // Variables. TODO: rustlex doesn't support getting lexeme positions.
         VAR         => |l : &mut Lexer<R>| { Some(Token::Ident(l.yystr())) }
@@ -191,18 +227,21 @@ rustlex! Lexer {
     }
 }
 
-#[test]
-fn test_lexer_1() {
+#[cfg(test)]
+mod test_lexer {
     use std::io::BufReader;
 
-    let str = "var1 + var2 -- comments\nvar3";
-    let inp = BufReader::new(str.as_bytes());
-    let lexer = Lexer::new(inp);
-    assert_eq!(lexer.collect::<Vec<Token>>(),
-               vec![
-                 Token::Ident("var1".to_string()),
-                 Token::Plus,
-                 Token::Ident("var2".to_string()),
-                 Token::Ident("var3".to_string()),
-               ]);
+    #[test]
+    fn test_lexer_1() {
+        let str = "var1 + var2 -- comments\nvar3";
+        let inp = BufReader::new(str.as_bytes());
+        let lexer = Lexer::new(inp);
+        assert_eq!(lexer.collect::<Vec<Token>>(),
+                   vec![
+                     Token::Ident("var1".to_string()),
+                     Token::Plus,
+                     Token::Ident("var2".to_string()),
+                     Token::Ident("var3".to_string()),
+                   ]);
+    }
 }
