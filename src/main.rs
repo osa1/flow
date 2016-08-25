@@ -30,10 +30,12 @@ fn main() {
 
         let inp = BufReader::new(contents.as_bytes());
         let lexer = lexer::Lexer::new(inp);
-        let tokens : Vec<lexer::Token> = lexer.collect();
+        let mut tokens : Vec<lexer::Token> = lexer.collect();
+        tokens.push(lexer::Token::EOS); // ugh
+
         println!("tokens: {:?}", tokens);
-        // let mb_ast : Result<Vec<Box<ast::Stmt>>, lalrpop_util::ParseError<(),lexer::Token,()>> =
-        //     parser::parse_StmtList(tokens);
-        // println!("ast: {:?}", mb_ast);
+        let mut parser = parser::Parser::new(&tokens);
+        let ast = parser.block();
+        println!("ast: {:?}", ast);
     }
 }

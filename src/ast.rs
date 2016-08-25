@@ -2,7 +2,7 @@ pub type Id = String;
 
 pub type Block = Vec<Box<Stmt>>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Stmt {
     Assign {
         lhss: Vec<Var>,
@@ -47,13 +47,13 @@ pub enum Stmt {
     Return(Vec<Box<Exp>>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Var {
     Var(Id),
     Select(Box<Exp>, Box<Exp>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum Exp {
     Nil,
 
@@ -83,7 +83,7 @@ pub enum Exp {
     Unop(Unop, Box<Exp>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum TblField {
     /// [exp] = exp
     ExpField {
@@ -100,13 +100,13 @@ pub enum TblField {
     Field(Box<Exp>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum FunCall {
     FunCall(Box<Exp>, Vec<Box<Exp>>),
     MethodCall(Box<Exp>, String, Vec<Box<Exp>>),
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Binop {
     Add, Sub, Mul, Div, Exp, Mod, Concat,
     LT, LTE, GT, GTE, EQ, NEQ, And, Or,
@@ -117,11 +117,11 @@ pub enum Binop {
 pub type Prec = u8;
 
 /// Associativity of a binary operator.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Assoc { Left, Right }
 
 /// Precedence and associativity of a binary operator.
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct BinopPrec {
     pub left: Prec,
     pub right: Prec,
@@ -157,7 +157,7 @@ pub fn binop_prec(op : Binop) -> BinopPrec {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Unop {
     Neg, Not, Len, Complement
 }

@@ -1,7 +1,7 @@
 use ast::*;
 use lexer::Token;
 
-struct Parser<'a> {
+pub struct Parser<'a> {
     ts: &'a [Token],
     pos: usize,
 }
@@ -24,7 +24,7 @@ impl SuffixedExp {
 /// lists etc.
 fn stat_follow(tok : &Token) -> bool {
     match tok {
-        &Token::Else | &Token::ElseIf | &Token::End | &Token::Until => true,
+        &Token::Else | &Token::ElseIf | &Token::End | &Token::Until | &Token::EOS => true,
         _ => false,
     }
 }
@@ -39,11 +39,12 @@ impl<'a> Parser<'a> {
 
     /// Token under cursor.
     fn cur_tok(&self) -> Token {
-        if self.pos < self.ts.len() {
-            self.ts[self.pos].clone()
-        } else {
-            Token::EOS
-        }
+        self.ts[self.pos].clone()
+    }
+
+    /// Reference to token under cursor.
+    fn cur_tok_(&self) -> &Token {
+        &self.ts[self.pos]
     }
 
     /// Skip the given token or fail if it's not found.
@@ -151,8 +152,8 @@ impl<'a> Parser<'a> {
     // A single variable
     fn name(&mut self) -> Id {
         match self.cur_tok() {
-            Token::Ident(s) => s,
-            _ => panic!("name: Unexpected token"),
+            Token::Ident(s) => { self.skip(); s },
+            tok => panic!("name: unexpected token {:?}", tok),
         }
     }
 
@@ -185,7 +186,7 @@ impl<'a> Parser<'a> {
     // <name> {,<name>} in <explist> <forbody>
     fn forlist(&mut self, var1 : Id) -> Box<Stmt> {
         let mut vars = vec![var1];
-        while &self.ts[self.pos] == &Token::Comma {
+        while self.cur_tok_() == &Token::Comma {
             vars.push(self.name());
             self.pos += 1;
         }
@@ -193,7 +194,7 @@ impl<'a> Parser<'a> {
         self.expect_tok(Token::In);
 
         let mut exps = vec![self.exp()];
-        while &self.ts[self.pos] == &Token::Comma {
+        while self.cur_tok_() == &Token::Comma {
             exps.push(self.exp());
             self.pos += 1;
         }
@@ -288,17 +289,18 @@ impl<'a> Parser<'a> {
 
     // <namelist> [= <explist>]
     fn localstat(&mut self) -> Box<Stmt> {
+        // there should be at least one name
         let mut lhss = vec![Var::Var(self.name())];
-        while &self.ts[self.pos] == &Token::Comma {
+        while self.cur_tok_() == &Token::Comma {
             self.skip(); // consume ,
             lhss.push(Var::Var(self.name()));
         }
 
         let mut rhss = vec![];
-        if self.cur_tok() == Token::Equal {
+        if self.cur_tok_() == &Token::Assign {
             self.skip(); // consume =
             rhss.push(self.exp());
-            while self.cur_tok() == Token::Comma {
+            while self.cur_tok_() == &Token::Comma {
                 self.skip(); // cosume ,
                 rhss.push(self.exp());
             }
@@ -375,10 +377,12 @@ impl<'a> Parser<'a> {
     // <funcall> or <var>
     fn suffixedexp(&mut self) -> SuffixedExp {
         let e0 = self.exp0();
+        println!("suffixedexp e0: {:?}", e0);
         match self.cur_tok() {
             Token::LParen | Token::SLit(_) | Token::LBrace | Token::Colon => {
                 // function or method call
                 // TODO: we redundantly copy string literals here
+                println!("suffixedexp parsing a funcall {:?}", e0);
                 SuffixedExp::FunCall(self.funcall(e0))
             },
             Token::Dot => {
@@ -394,8 +398,15 @@ impl<'a> Parser<'a> {
                 self.expect_tok(Token::RBracket);
                 SuffixedExp::Var(Var::Select(e0, field))
             },
-            _ =>
-                panic!("suffixedexp: unexpected token"),
+            Token::EOS => {
+                match *e0 {
+                    Exp::Var(v) => SuffixedExp::Var(v),
+                    Exp::FunCall(fc) => SuffixedExp::FunCall(fc),
+                    _ => panic!("suffixedexp: unexpected end of stream"),
+                }
+            },
+            tok =>
+                panic!("suffixedexp: unexpected token: {:?}", tok),
         }
     }
 }
@@ -485,7 +496,8 @@ impl<'a> Parser<'a> {
                 let (args, vararg, body) = self.fundef();
                 Box::new(Exp::FunDef { args: args, vararg: vararg, body: body })
             },
-            _ => Box::new(self.suffixedexp().to_exp()),
+            _ =>
+                Box::new(self.suffixedexp().to_exp()),
         }
     }
 
@@ -533,14 +545,18 @@ impl<'a> Parser<'a> {
     // name | '(' exp ')'
     fn exp0(&mut self) -> Box<Exp> {
         match &self.ts[self.pos] {
-            &Token::Ident(ref s) =>
-                Box::new(Exp::Var(Var::Var(s.to_owned()))),
+            &Token::Ident(ref s) => {
+                self.skip(); // skip ident
+                Box::new(Exp::Var(Var::Var(s.to_owned())))
+            },
             &Token::LParen => {
+                self.skip(); // skip (
                 let exp = self.exp();
                 self.expect_tok(Token::RParen);
                 exp
             },
-            _ => panic!("exp0: Unexpected token"),
+            tok =>
+                panic!("exp0: Unexpected token: {:?}", tok),
         }
     }
 
@@ -562,24 +578,29 @@ impl<'a> Parser<'a> {
     }
 
     fn funargs(&mut self) -> Vec<Box<Exp>> {
+        println!("funargs");
+
         let mut args = vec![];
 
-        match &self.ts[self.pos] {
-            &Token::LParen => {
+        match self.cur_tok() {
+            Token::LParen => {
                 self.skip(); // skip (
                 args.push(self.exp());
                 while self.cur_tok() == Token::Comma {
                     self.skip(); // skip ,
                     args.push(self.exp());
                 }
+                self.expect_tok(Token::RParen);
             },
-            &Token::LBrace => {
+            Token::LBrace => {
                 // single table argument
+                self.skip();
                 args.push(self.constructor());
             },
-            &Token::SLit(ref str) => {
+            Token::SLit(str) => {
                 // single string argument
-                args.push(Box::new(Exp::String(str.to_owned())));
+                self.skip();
+                args.push(Box::new(Exp::String(str)));
             },
             _ => panic!("funargs"),
         }
@@ -587,7 +608,7 @@ impl<'a> Parser<'a> {
         args
     }
 
-    fn block(&mut self) -> Block {
+    pub fn block(&mut self) -> Block {
         let mut stats = vec![];
         while !stat_follow(&self.cur_tok()) {
             stats.push(self.stat());
@@ -631,5 +652,31 @@ impl<'a> Parser<'a> {
         let block = self.block();
 
         (args, vararg, block)
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
+
+#[cfg(test)]
+mod test_parser {
+    use ast::*;
+    use lexer::{Lexer, Token};
+    use parser::Parser;
+
+    use std::io::BufReader;
+
+    #[test]
+    fn parser_exp_1() {
+        let s = "1 + 2";
+        let inp = BufReader::new(s.as_bytes());
+        let mut tokens : Vec<Token> = Lexer::new(inp).collect();
+        tokens.push(Token::EOS); // ugh
+        let mut parser = Parser::new(&tokens);
+        assert_eq!(parser.exp(),
+                   Box::new(Exp::Binop(Box::new(Exp::Number("1".to_owned())),
+                                       Binop::Add,
+                                       Box::new(Exp::Number("2".to_owned())))));
     }
 }
