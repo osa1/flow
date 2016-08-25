@@ -54,25 +54,25 @@ impl<'a> Parser<'a> {
 impl<'a> Parser<'a> {
 
     fn stat(&mut self) -> Box<Stmt> {
-        match self.cur_tok() {
-            Token::Semic => { self.skip(); self.stat() },
-            Token::If => { self.skip(); self.ifstat() },
-            Token::While => { self.skip(); self.whilestat() },
-            Token::Do => { self.skip(); self.dostat() },
-            Token::For => { self.skip(); self.forstat() },
-            Token::Repeat => { self.skip(); self.repeatstat() },
-            Token::Function => { self.skip(); self.funcstat() },
-            Token::Local => {
+        match self.cur_tok_() {
+            &Token::Semic => { self.skip(); self.stat() },
+            &Token::If => { self.skip(); self.ifstat() },
+            &Token::While => { self.skip(); self.whilestat() },
+            &Token::Do => { self.skip(); self.dostat() },
+            &Token::For => { self.skip(); self.forstat() },
+            &Token::Repeat => { self.skip(); self.repeatstat() },
+            &Token::Function => { self.skip(); self.funcstat() },
+            &Token::Local => {
                 self.skip(); // skip "local"
-                match self.cur_tok() {
-                    Token::Function => { self.skip(); self.localfuncstat() },
+                match self.cur_tok_() {
+                    &Token::Function => { self.skip(); self.localfuncstat() },
                     _ => self.localstat(),
                 }
             },
-            Token::DColon => { self.skip(); self.labelstat() },
-            Token::Return => { self.skip(); self.returnstat() },
-            Token::Break => { self.skip(); self.breakstat() },
-            Token::Goto => { self.skip(); self.gotostat() },
+            &Token::DColon => { self.skip(); self.labelstat() },
+            &Token::Return => { self.skip(); self.returnstat() },
+            &Token::Break => { self.skip(); self.breakstat() },
+            &Token::Goto => { self.skip(); self.gotostat() },
             _ => self.exprstat(),
         }
     }
@@ -129,9 +129,9 @@ impl<'a> Parser<'a> {
     // <fornum | forlist> end
     fn forstat(&mut self) -> Box<Stmt> {
         let var1 = self.name();
-        match self.cur_tok() {
-            Token::Assign => { self.skip(); self.fornum(var1) },
-            Token::Comma | Token::In => self.forlist(var1),
+        match self.cur_tok_() {
+            &Token::Assign => { self.skip(); self.fornum(var1) },
+            &Token::Comma | &Token::In => self.forlist(var1),
             _ => panic!("Syntax error in for statement"),
         }
     }
@@ -246,12 +246,12 @@ impl<'a> Parser<'a> {
     fn funcname(&mut self) -> (Id, Vec<Id>, Option<Id>) {
         let n1 = self.name();
         let mut fs = vec![];
-        while self.cur_tok() == Token::Dot {
+        while self.cur_tok_() == &Token::Dot {
             self.skip(); // consume .
             fs.push(self.name());
         }
         let mname = {
-            if self.cur_tok() == Token::Colon {
+            if self.cur_tok_() == &Token::Colon {
                 self.skip(); // consume :
                 Some(self.name())
             } else {
