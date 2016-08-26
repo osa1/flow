@@ -475,7 +475,7 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                         c = chars.next();
                         col += 1;
                     },
-                    Some('+') | Some('-') => {
+                    Some('-') => {
                         // either the first character, or right after an
                         // exponent prefix
                         if buf.is_empty() {
@@ -484,15 +484,40 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                             col += 1;
                         } else {
                             // Rust String API sucks
-                            let c1 = buf.pop();
+                            let c1 = buf.pop().unwrap();
                             match c1 {
-                                Some('p') | Some('P') | Some('e') | Some('E') => {
-                                    buf.push(c1.unwrap());
-                                    buf.push(c.unwrap());
+                                'p' | 'P' | 'e' | 'E' => {
+                                    buf.push(c1);
+                                    buf.push('-');
                                     c = chars.next();
                                     col += 1;
                                 },
-                                _ => fail!("invalid number constant at {}, {}", line, col)
+                                _ => {
+                                    // end of the literal
+                                    buf.push(c1);
+                                    ts.push(Tok::Num(std::mem::replace(&mut buf, String::new())));
+                                    mode = Mode::Top;
+                                },
+                            }
+                        }
+                    },
+                    Some('+') => {
+                        // right after an exponent prefix
+                        let c1 = buf.pop();
+                        match c1 {
+                            Some('p') | Some('P') | Some('e') | Some('E') => {
+                                buf.push(c1.unwrap());
+                                buf.push('+');
+                                c = chars.next();
+                                col += 1;
+                            },
+                            _ => {
+                                // end of the literal
+                                // TODO: This is not entirely correct. What
+                                // happens if we see something like `0x+1`?
+                                buf.push(c1.unwrap());
+                                ts.push(Tok::Num(std::mem::replace(&mut buf, String::new())));
+                                mode = Mode::Top;
                             }
                         }
                     },
@@ -580,7 +605,7 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                             },
                             Some(c_) if is_dec_num_char(c_) => {
                                 // up to three decimal digits (at least one)
-                                let mut n = (c_ as u8) - b'0';
+                                let mut n : i32 = ((c_ as u8) - b'0') as i32;
                                 for _ in 0 .. 2 {
                                     c = chars.next();
                                     col += 1;
@@ -590,7 +615,8 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                                         break;
                                     }
                                 }
-                                buf.push(n as char);
+                                // TODO: make sure n <= 255?
+                                buf.push((n as u8) as char);
                             },
                             _ => fail!("invalid string escape at {}, {}", line, col),
                         }
@@ -707,6 +733,9 @@ mod test_lexer {
 
     #[bench]
     fn lexer_bench(b : &mut Bencher) {
+
+        // 30ef764: 1,172,010 ns/iter (+/- 64,710)
+
         // read all the Lua files, concatenate contents
         let mut lua = String::new();
         let bench_files_dir = "lua-5.3.1-tests/".to_string();
@@ -720,6 +749,7 @@ mod test_lexer {
                 path.push_str(fname);
                 let mut f = fs::File::open(path).unwrap();
                 f.read_to_string(&mut lua).unwrap();
+                lua.push('\n');
             }
             // println!("{}", lua.len());
         }
