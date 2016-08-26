@@ -10,6 +10,9 @@ mod parser;
 mod uniq;
 mod var;
 
+#[cfg(test)]
+mod test_utils;
+
 use std::env;
 use std::fs::File;
 use std::io::Read;
@@ -27,9 +30,10 @@ fn main() {
 
         let tokens : Result<Vec<lexer::Tok>, lexer::LexerError> = lexer::tokenize(&contents);
         // println!("tokens: {:?}", tokens);
-        for tok in tokens.as_ref().unwrap().iter() {
-            println!("{:?}\n", tok);
-        }
+        // for tok in tokens.as_ref().unwrap().iter() {
+        //     println!("{:?}\n", tok);
+        // }
+        println!("total {} tokens", tokens.as_ref().unwrap().len());
         // let mut parser = parser::Parser::new(tokens.as_ref().unwrap());
         // let ast = parser.block();
         // println!("ast: {:?}", ast);

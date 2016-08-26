@@ -665,8 +665,9 @@ mod test_parser {
     use ast::*;
     use lexer::{Tok, tokenize};
     use parser::Parser;
+    use test_utils::*;
 
-    use std::io::BufReader;
+    use test::Bencher;
 
     #[test]
     fn parser_exp_1() {
@@ -682,5 +683,19 @@ mod test_parser {
                    Box::new(Exp::Binop(Box::new(Exp::Number("1".to_owned())),
                                        Binop::Add,
                                        Box::new(Exp::Number("2".to_owned())))));
+    }
+
+    #[bench]
+    fn parser_bench(b : &mut Bencher) {
+
+        // Read all Lua files, concatenate contents and parse as one big
+        // program. 10878 lines in total.
+
+        let lua = concat_lua_tests();
+        let tokens = tokenize(&lua).unwrap();
+        b.iter(|| {
+            let mut parser = Parser::new(&tokens);
+            parser.block()
+        });
     }
 }

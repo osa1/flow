@@ -1,4 +1,3 @@
-use std::ascii::AsciiExt;
 use std::char;
 use std;
 
@@ -84,7 +83,6 @@ pub struct TokPos {
 
 /// Could the char be a first character for an identifier or keyword?
 fn is_first_id_char(ch : char) -> bool {
-    if !ch.is_ascii() { return false; }
     let ch = ch as u8;
     (ch >= b'a' && ch <= b'z') || (ch >= b'A' && ch <= b'Z') || ch == b'_'
 }
@@ -96,19 +94,16 @@ fn is_first_num_char(ch : char) -> bool {
 
 /// Is this a decimal numeral character?
 fn is_dec_num_char(ch : char) -> bool {
-    if !ch.is_ascii() { return false; }
     let ch = ch as u8;
     ch >= b'0' && ch <= b'9'
 }
 
 fn is_hex_num_char(ch : char) -> bool {
-    if !ch.is_ascii() { return false; }
     let ch = ch as u8;
     (ch >= b'0' && ch <= b'9') || (ch >= b'a' && ch <= b'f') || (ch >= b'A' && ch <= b'F')
 }
 
 fn hex_digit(ch : char) -> Option<u8> {
-    if !ch.is_ascii() { return None; }
     let ch = ch as u8;
     if ch >= b'0' && ch <= b'9' {
         Some(ch - b'0')
@@ -122,7 +117,6 @@ fn hex_digit(ch : char) -> Option<u8> {
 }
 
 fn dec_digit(ch : char) -> Option<u8> {
-    if !ch.is_ascii() { return None; }
     let ch = ch as u8;
     if ch >= b'0' && ch <= b'9' {
         Some(ch - b'0')
@@ -133,7 +127,6 @@ fn dec_digit(ch : char) -> Option<u8> {
 
 /// Letters, digits, and underscores are valid identifier characters.
 fn is_id_char(ch : char) -> bool {
-    if !ch.is_ascii() { return false; }
     let ch = ch as u8;
     (ch >= b'a' && ch <= b'z') || (ch >= b'A' && ch <= b'Z') || (ch >= b'0' && ch <= b'9') || ch == b'_'
 }
@@ -747,9 +740,9 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
 mod test_lexer {
     use super::*;
 
-    use std::fs;
-    use std::io::Read;
     use test::Bencher;
+
+    use test_utils::*;
 
     #[test]
     fn test_lexer_1() {
@@ -769,11 +762,6 @@ mod test_lexer {
         assert_eq!(tokenize(nums).unwrap().len(), 8);
     }
 
-    fn is_lua_file(s : &str) -> bool {
-        let len = s.len();
-        len > 4 && &s[ len - 4 .. ] == ".lua"
-    }
-
     #[bench]
     fn lexer_bench(b : &mut Bencher) {
 
@@ -782,23 +770,7 @@ mod test_lexer {
 
         // ed9887a: 4,891,755 ns/iter (+/- 205,915)
 
-        let mut lua = String::new();
-        let bench_files_dir = "lua-5.3.1-tests/".to_string();
-
-        for file_ in fs::read_dir(&bench_files_dir).unwrap() {
-            let file = file_.unwrap();
-            let fname_os = file.file_name();
-            let fname = fname_os.to_str().unwrap();
-            if is_lua_file(fname) {
-                let mut path = bench_files_dir.clone();
-                path.push_str(fname);
-                let mut f = fs::File::open(path).unwrap();
-                f.read_to_string(&mut lua).unwrap();
-                lua.push('\n');
-            }
-            // println!("{}", lua.len());
-        }
-
+        let lua = concat_lua_tests();
         b.iter(|| {
             tokenize(&lua).unwrap()
         });
