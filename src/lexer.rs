@@ -780,6 +780,8 @@ mod test_lexer {
         // Read all Lua files, concatenate contents.
         // 10878 lines in total.
 
+        // ed9887a: 4,891,755 ns/iter (+/- 205,915)
+
         let mut lua = String::new();
         let bench_files_dir = "lua-5.3.1-tests/".to_string();
 
