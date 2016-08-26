@@ -734,9 +734,9 @@ mod test_lexer {
     #[bench]
     fn lexer_bench(b : &mut Bencher) {
 
-        // 30ef764: 1,172,010 ns/iter (+/- 64,710)
+        // Read all Lua files, concatenate contents.
+        // 10878 lines in total.
 
-        // read all the Lua files, concatenate contents
         let mut lua = String::new();
         let bench_files_dir = "lua-5.3.1-tests/".to_string();
 
@@ -755,7 +755,7 @@ mod test_lexer {
         }
 
         b.iter(|| {
-            tokenize(&lua)
+            tokenize(&lua).unwrap()
         });
     }
 }
