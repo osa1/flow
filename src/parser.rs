@@ -685,7 +685,8 @@ mod test_parser {
         // program. 10878 lines in total.
 
         let lua = concat_lua_tests();
-        let tokens = tokenize(&lua).unwrap();
+        let mut tokens = tokenize(&lua).unwrap();
+        tokens.push(Tok::EOS);
         b.iter(|| {
             let mut parser = Parser::new(&tokens);
             parser.block()
