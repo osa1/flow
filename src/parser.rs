@@ -180,8 +180,6 @@ impl<'a> Parser<'a> {
             vars.push(self.name());
         }
 
-        println!("parsed names: {:?}", vars);
-
         self.expect_tok(Tok::In);
 
         let mut exps = vec![self.exp()];
@@ -312,7 +310,7 @@ impl<'a> Parser<'a> {
 
     fn returnstat(&mut self) -> Box<Stmt> {
         let mut explist = vec![];
-        if self.pos < self.ts.len() && !stat_follow(&self.ts[self.pos]) {
+        if self.pos < self.ts.len() && self.cur_tok_() != &Tok::Semic && !stat_follow(&self.ts[self.pos]) {
             explist.push(self.exp());
             while &self.ts[self.pos] == &Tok::Comma {
                 self.skip(); // skip ,
@@ -372,12 +370,10 @@ impl<'a> Parser<'a> {
         let mut e0 = self.exp0();
 
         loop {
-            println!("suffixedexp e0: {:?}", e0);
             match self.cur_tok() {
                 Tok::LParen | Tok::SLit(_) | Tok::LBrace | Tok::Colon => {
                     // function or method call
                     // TODO: we redundantly copy string literals here
-                    println!("suffixedexp parsing a funcall {:?}", e0);
                     e0 = Box::new(Exp::FunCall(self.funcall(e0)))
                 },
                 Tok::Dot => {
@@ -493,7 +489,6 @@ impl<'a> Parser<'a> {
 
     // [fieldlist] '}'
     fn constructor(&mut self) -> Box<Exp> {
-        println!("constructor");
         let mut fields = vec![];
 
         if &self.ts[self.pos] != &Tok::RBrace {
@@ -528,7 +523,6 @@ impl<'a> Parser<'a> {
                 TblField::NamedField { lhs: n.to_owned(), rhs: e2 }
             },
             _ => {
-                println!("field");
                 TblField::Field(self.exp())
             }
         }
@@ -571,8 +565,6 @@ impl<'a> Parser<'a> {
     }
 
     fn funargs(&mut self) -> Vec<Box<Exp>> {
-        println!("funargs");
-
         let mut args = vec![];
 
         match self.cur_tok() {
