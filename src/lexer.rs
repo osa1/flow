@@ -466,6 +466,12 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                         c = chars.next();
                         col += 1;
                     },
+                    Some(c_) if (mode == Mode::Number && is_dec_num_char(c_)) ||
+                                (mode == Mode::HexNumber && is_hex_num_char(c_)) => {
+                        buf.push(c_);
+                        c = chars.next();
+                        col += 1;
+                    },
                     Some('p') | Some('P') | Some('e') | Some('E') => {
                         if seen_exp {
                             fail!("invalid number constant at {}, {}", line, col);
@@ -520,12 +526,6 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                                 mode = Mode::Top;
                             }
                         }
-                    },
-                    Some(c_) if (mode == Mode::Number && is_dec_num_char(c_)) ||
-                                (mode == Mode::HexNumber && is_hex_num_char(c_)) => {
-                        buf.push(c_);
-                        c = chars.next();
-                        col += 1;
                     },
                     _ => {
                         ts.push(Tok::Num(std::mem::replace(&mut buf, String::new())));
@@ -610,7 +610,7 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                                     c = chars.next();
                                     col += 1;
                                     if c.is_some() && is_dec_num_char(c.unwrap()) {
-                                        n = n * 10 + (c.unwrap() as u8) - b'0';
+                                        n = n * 10 + (((c.unwrap() as u8) - b'0') as i32);
                                     } else {
                                         break;
                                     }
