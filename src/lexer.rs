@@ -1,4 +1,5 @@
 use std::ascii::AsciiExt;
+use std::char;
 use std;
 
 #[derive(PartialEq, Eq, Debug, Clone)]
@@ -556,6 +557,43 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                             Some('"') =>  { buf.push('"');        c = chars.next(); col += 1; }
                             Some('\'') => { buf.push('\'');       c = chars.next(); col += 1; }
                             Some('\n') => { buf.push('\n');       c = chars.next(); col  = 1; line += 1; }
+                            Some('u') => {
+                                // utf-8 escape
+                                // must be followed by a {
+                                c = chars.next();
+                                col += 1;
+                                match c {
+                                    Some('{') => {
+                                        // one or more hex numbers
+                                        let mut utf8 : u32 = 0;
+                                        c = chars.next();
+                                        col += 1;
+                                        loop {
+                                            match c {
+                                                Some('}') => {
+                                                    buf.push(char::from_u32(utf8).unwrap());
+                                                    c = chars.next();
+                                                    col += 1;
+                                                    break;
+                                                },
+                                                Some(c_) => {
+                                                    match hex_digit(c_) {
+                                                        Some(hex) => {
+                                                            utf8 = utf8 * 16 + (hex as u32);
+                                                            c = chars.next();
+                                                            col += 1;
+                                                        },
+                                                        None => fail!("invalid hex digit at {}, {}", line, col),
+                                                    }
+                                                },
+                                                _ => fail!("invalid hex digit at {}, {}", line, col),
+                                            }
+                                        }
+
+                                    },
+                                    _ => { fail!("wrong utf-8 escape in string literal at {}, {}", line, col); },
+                                }
+                            },
                             Some('z') => {
                                 // skip whitespace
                                 loop {
@@ -710,7 +748,6 @@ mod test_lexer {
     use super::*;
 
     use std::fs;
-    use std::io::BufReader;
     use std::io::Read;
     use test::Bencher;
 
