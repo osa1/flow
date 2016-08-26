@@ -663,7 +663,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod test_parser {
     use ast::*;
-    use lexer::{Lexer, Tok};
+    use lexer::{Tok, tokenize};
     use parser::Parser;
 
     use std::io::BufReader;
@@ -671,8 +671,11 @@ mod test_parser {
     #[test]
     fn parser_exp_1() {
         let s = "1 + 2";
-        let inp = BufReader::new(s.as_bytes());
-        let mut tokens : Vec<Tok> = Lexer::new(inp).collect();
+        let mut tokens = {
+            let ret = tokenize(s);
+            assert!(ret.is_ok());
+            ret.unwrap()
+        };
         tokens.push(Tok::EOS); // ugh
         let mut parser = Parser::new(&tokens);
         assert_eq!(parser.exp(),

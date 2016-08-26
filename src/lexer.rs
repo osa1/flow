@@ -691,19 +691,51 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
 
 #[cfg(test)]
 mod test_lexer {
+    use super::*;
+
+    use std::fs;
     use std::io::BufReader;
+    use std::io::Read;
+    use test::Bencher;
 
     #[test]
     fn test_lexer_1() {
         let str = "var1 + var2 -- comments\nvar3";
-        let inp = BufReader::new(str.as_bytes());
-        let lexer = Lexer::new(inp);
-        assert_eq!(lexer.collect::<Vec<Tok>>(),
-                   vec![
-                     Tok::Ident("var1".to_string()),
-                     Tok::Plus,
-                     Tok::Ident("var2".to_string()),
-                     Tok::Ident("var3".to_string()),
-                   ]);
+        assert_eq!(tokenize(str),
+                   Ok(vec![
+                        Tok::Ident("var1".to_string()),
+                        Tok::Plus,
+                        Tok::Ident("var2".to_string()),
+                        Tok::Ident("var3".to_string()),
+                      ]));
+    }
+
+    fn is_lua_file(s : &str) -> bool {
+        let len = s.len();
+        len > 4 && &s[ len - 4 .. ] == ".lua"
+    }
+
+    #[bench]
+    fn lexer_bench(b : &mut Bencher) {
+        // read all the Lua files, concatenate contents
+        let mut lua = String::new();
+        let bench_files_dir = "lua-5.3.1-tests/".to_string();
+
+        for file_ in fs::read_dir(&bench_files_dir).unwrap() {
+            let file = file_.unwrap();
+            let fname_os = file.file_name();
+            let fname = fname_os.to_str().unwrap();
+            if is_lua_file(fname) {
+                let mut path = bench_files_dir.clone();
+                path.push_str(fname);
+                let mut f = fs::File::open(path).unwrap();
+                f.read_to_string(&mut lua).unwrap();
+            }
+            // println!("{}", lua.len());
+        }
+
+        b.iter(|| {
+            tokenize(&lua)
+        });
     }
 }

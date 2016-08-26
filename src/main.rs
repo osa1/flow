@@ -1,4 +1,7 @@
+#![feature(test)]
+
 extern crate bit_set;
+extern crate test;
 
 mod ast;
 mod cfg;
