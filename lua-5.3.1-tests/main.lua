@@ -1,4 +1,3 @@
-# testing special comment on first line
 -- $Id: main.lua,v 1.62 2015/05/15 12:28:08 roberto Exp $
 
 -- most (all?) tests here assume a reasonable "Unix-like" shell
