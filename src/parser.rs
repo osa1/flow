@@ -25,23 +25,27 @@ impl<'a> Parser<'a> {
     }
 
     /// Tok under cursor.
+    #[inline(always)]
     fn cur_tok(&self) -> Tok {
-        self.ts[self.pos].clone()
+        unsafe { self.ts.get_unchecked(self.pos).clone() }
     }
 
     /// Reference to token under cursor.
+    #[inline(always)]
     fn cur_tok_(&self) -> &Tok {
-        &self.ts[self.pos]
+        unsafe { &self.ts.get_unchecked(self.pos) }
     }
 
     /// Skip the given token or fail if it's not found.
+    #[inline(always)]
     fn expect_tok(&mut self, tok : Tok) {
-        if self.ts[self.pos] != tok {
+        if self.cur_tok_() != &tok {
             panic!("Unexpected token. Expected {:?}, found {:?}", tok, self.cur_tok_());
         }
         self.skip();
     }
 
+    #[inline(always)]
     fn skip(&mut self) {
         self.pos += 1;
     }
@@ -54,7 +58,7 @@ impl<'a> Parser<'a> {
 
 impl<'a> Parser<'a> {
 
-    fn stat(&mut self) -> Box<Stmt> {
+    fn stat(&mut self) -> Stmt {
         match self.cur_tok_() {
             &Tok::Semic => { self.skip(); self.stat() },
             &Tok::If => { self.skip(); self.ifstat() },
@@ -78,7 +82,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn ifstat(&mut self) -> Box<Stmt> {
+    fn ifstat(&mut self) -> Stmt {
         let mut conds = vec![];
         // parse initial condition
         conds.push(self.cond_then());
@@ -97,10 +101,10 @@ impl<'a> Parser<'a> {
 
         self.expect_tok(Tok::End);
 
-        Box::new(Stmt::If {
+        Stmt::If {
             conds: conds,
             else_: else_,
-        })
+        }
     }
 
     // <condition> then <block>
@@ -112,23 +116,23 @@ impl<'a> Parser<'a> {
     }
 
     // <condition> do <block> end
-    fn whilestat(&mut self) -> Box<Stmt> {
+    fn whilestat(&mut self) -> Stmt {
         let cond = self.exp();
         self.expect_tok(Tok::Do);
         let block = self.block();
         self.expect_tok(Tok::End);
-        Box::new(Stmt::While(cond, block))
+        Stmt::While(cond, block)
     }
 
     // <block> end
-    fn dostat(&mut self) -> Box<Stmt> {
+    fn dostat(&mut self) -> Stmt {
         let block = self.block();
         self.expect_tok(Tok::End);
-        Box::new(Stmt::Do(block))
+        Stmt::Do(block)
     }
 
     // <fornum | forlist> end
-    fn forstat(&mut self) -> Box<Stmt> {
+    fn forstat(&mut self) -> Stmt {
         let var1 = self.name();
         match self.cur_tok_() {
             &Tok::Assign => { self.skip(); self.fornum(var1) },
@@ -146,7 +150,7 @@ impl<'a> Parser<'a> {
     }
 
     // exp1, exp2 [,exp3] <forbody>
-    fn fornum(&mut self, var : Id) -> Box<Stmt> {
+    fn fornum(&mut self, var : Id) -> Stmt {
         let start = self.exp();
         self.expect_tok(Tok::Comma);
         let end = self.exp();
@@ -163,17 +167,17 @@ impl<'a> Parser<'a> {
         let body = self.block();
         self.expect_tok(Tok::End);
 
-        Box::new(Stmt::ForRange {
+        Stmt::ForRange {
             var: var,
             start: start,
             end: end,
             step: step,
             body: body,
-        })
+        }
     }
 
     // <name> {,<name>} in <explist> <forbody>
-    fn forlist(&mut self, var1 : Id) -> Box<Stmt> {
+    fn forlist(&mut self, var1 : Id) -> Stmt {
         let mut vars = vec![var1];
         while self.cur_tok_() == &Tok::Comma {
             self.skip(); // skip ,
@@ -190,11 +194,11 @@ impl<'a> Parser<'a> {
 
         let body = self.forbody();
 
-        Box::new(Stmt::ForIn {
+        Stmt::ForIn {
             vars: vars,
             exps: exps,
             body: body,
-        })
+        }
     }
 
     fn forbody(&mut self) -> Block {
@@ -204,14 +208,14 @@ impl<'a> Parser<'a> {
         block
     }
 
-    fn repeatstat(&mut self) -> Box<Stmt> {
+    fn repeatstat(&mut self) -> Stmt {
         let block = self.block();
         self.expect_tok(Tok::Until);
         let cond = self.exp();
-        Box::new(Stmt::Repeat(block, cond))
+        Stmt::Repeat(block, cond)
     }
 
-    fn funcstat(&mut self) -> Box<Stmt> {
+    fn funcstat(&mut self) -> Stmt {
         let (n, mut sels, mname) = self.funcname();
         let (mut args, vararg, body) = self.fundef();
         match mname {
@@ -235,11 +239,11 @@ impl<'a> Parser<'a> {
                 body: body,
             });
 
-        Box::new(Stmt::Assign {
+        Stmt::Assign {
             lhss: vec![lhs],
             rhss: vec![rhs],
             is_local: false,
-        })
+        }
     }
 
     fn funcname(&mut self) -> (Id, Vec<Id>, Option<Id>) {
@@ -261,11 +265,11 @@ impl<'a> Parser<'a> {
     }
 
     // <name> <fundef>
-    fn localfuncstat(&mut self) -> Box<Stmt> {
+    fn localfuncstat(&mut self) -> Stmt {
         let fname = self.name();
         let (args, vararg, body) = self.fundef();
 
-        Box::new(Stmt::Assign {
+        Stmt::Assign {
             lhss: vec![Var::Var(fname)],
             rhss: vec![Box::new(Exp::FunDef {
                 args:args,
@@ -273,11 +277,11 @@ impl<'a> Parser<'a> {
                 body: body,
             })],
             is_local: true,
-        })
+        }
     }
 
     // <namelist> [= <explist>]
-    fn localstat(&mut self) -> Box<Stmt> {
+    fn localstat(&mut self) -> Stmt {
         // there should be at least one name
         let mut lhss = vec![Var::Var(self.name())];
         while self.cur_tok_() == &Tok::Comma {
@@ -295,20 +299,20 @@ impl<'a> Parser<'a> {
             }
         }
 
-        Box::new(Stmt::Assign {
+        Stmt::Assign {
             lhss: lhss,
             rhss: rhss,
             is_local: true,
-        })
+        }
     }
 
-    fn labelstat(&mut self) -> Box<Stmt> {
+    fn labelstat(&mut self) -> Stmt {
         let label = self.name();
         self.expect_tok(Tok::DColon);
-        Box::new(Stmt::Label(label))
+        Stmt::Label(label)
     }
 
-    fn returnstat(&mut self) -> Box<Stmt> {
+    fn returnstat(&mut self) -> Stmt {
         let mut explist = vec![];
         if self.pos < self.ts.len() && self.cur_tok_() != &Tok::Semic && !stat_follow(&self.ts[self.pos]) {
             explist.push(self.exp());
@@ -317,26 +321,26 @@ impl<'a> Parser<'a> {
                 explist.push(self.exp());
             }
         }
-        Box::new(Stmt::Return(explist))
+        Stmt::Return(explist)
     }
 
-    fn breakstat(&mut self) -> Box<Stmt> {
-        Box::new(Stmt::Break)
+    fn breakstat(&mut self) -> Stmt {
+        Stmt::Break
     }
 
-    fn gotostat(&mut self) -> Box<Stmt> {
+    fn gotostat(&mut self) -> Stmt {
         let lbl = self.name();
-        Box::new(Stmt::Goto(lbl))
+        Stmt::Goto(lbl)
     }
 
     // function call or assignment. Both start with a <prefixexp>.
-    fn exprstat(&mut self) -> Box<Stmt> {
+    fn exprstat(&mut self) -> Stmt {
         match *self.suffixedexp() {
             Exp::Var(var) => {
                 // assignment
                 let mut varlist = vec![var];
                 while &self.ts[self.pos] == &Tok::Comma {
-                    self.pos += 1;
+                    self.skip(); // skip ,
                     match *self.suffixedexp() {
                         Exp::Var(var) => varlist.push(var),
                         _ => panic!("exprstat"),
@@ -347,19 +351,19 @@ impl<'a> Parser<'a> {
                 self.expect_tok(Tok::Assign);
                 let mut explist = vec![self.exp()];
                 while &self.ts[self.pos] == &Tok::Comma {
-                    self.pos += 1; // skip ,
+                    self.skip(); // skip ,
                     explist.push(self.exp());
                 }
 
-                Box::new(Stmt::Assign {
+                Stmt::Assign {
                     lhss: varlist,
                     rhss: explist,
                     is_local: false,
-                })
+                }
             },
             Exp::FunCall(fc) => {
                 // function call
-                Box::new(Stmt::FunCall(fc))
+                Stmt::FunCall(fc)
             },
             _ => panic!("exprstat"),
         }
@@ -450,7 +454,7 @@ impl<'a> Parser<'a> {
                 self.simpleexp(),
             Some(unop) => {
                 self.skip();
-                let e = self.exp_(unop_prec(unop));
+                let e = self.exp_(UNOP_PREC);
                 Box::new(Exp::Unop(unop, e))
             },
         };
