@@ -100,6 +100,12 @@ fn is_dec_num_char(ch : char) -> bool {
     ch >= b'0' && ch <= b'9'
 }
 
+fn is_hex_num_char(ch : char) -> bool {
+    if !ch.is_ascii() { return false; }
+    let ch = ch as u8;
+    (ch >= b'0' && ch <= b'9') || (ch >= b'a' && ch <= b'f') || (ch >= b'A' && ch <= b'F')
+}
+
 fn hex_digit(ch : char) -> Option<u8> {
     if !ch.is_ascii() { return None; }
     let ch = ch as u8;
@@ -449,7 +455,7 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                 }
             },
 
-            Mode::Number => {
+            Mode::Number | Mode::HexNumber => {
                 match c {
                     Some('.') => {
                         if seen_dot {
@@ -490,33 +496,17 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                             }
                         }
                     },
-                    Some(c_) if is_dec_num_char(c_) => {
+                    Some(c_) if (mode == Mode::Number && is_dec_num_char(c_)) ||
+                                (mode == Mode::HexNumber && is_hex_num_char(c_)) => {
                         buf.push(c_);
                         c = chars.next();
                         col += 1;
-                    },
-                    Some(' ') => {
-                        ts.push(Tok::Num(std::mem::replace(&mut buf, String::new())));
-                        c = chars.next();
-                        col += 1;
-                        mode = Mode::Top;
-                    },
-                    Some('\n') => {
-                        ts.push(Tok::Num(std::mem::replace(&mut buf, String::new())));
-                        c = chars.next();
-                        col = 1;
-                        line += 1;
-                        mode = Mode::Top;
                     },
                     _ => {
                         ts.push(Tok::Num(std::mem::replace(&mut buf, String::new())));
                         mode = Mode::Top;
                     },
                 }
-            },
-
-            Mode::HexNumber => {
-                panic!("hex number lexer not implemented ({}, {})", line, col)
             },
 
             Mode::String(delim) => {
