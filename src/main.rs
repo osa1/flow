@@ -1,8 +1,3 @@
-#![feature(plugin)]
-#![plugin(rustlex)]
-
-#[allow(plugin_as_library)] extern crate rustlex;
-
 extern crate bit_set;
 
 mod ast;
@@ -14,7 +9,6 @@ mod var;
 
 use std::env;
 use std::fs::File;
-use std::io::BufReader;
 use std::io::Read;
 
 fn main() {
@@ -28,14 +22,13 @@ fn main() {
             contents
         };
 
-        let inp = BufReader::new(contents.as_bytes());
-        let lexer = lexer::Lexer::new(inp);
-        let mut tokens : Vec<lexer::Token> = lexer.collect();
-        tokens.push(lexer::Token::EOS); // ugh
-
-        println!("tokens: {:?}", tokens);
-        let mut parser = parser::Parser::new(&tokens);
-        let ast = parser.block();
-        println!("ast: {:?}", ast);
+        let tokens : Result<Vec<lexer::Tok>, lexer::LexerError> = lexer::tokenize(&contents);
+        // println!("tokens: {:?}", tokens);
+        for tok in tokens.as_ref().unwrap().iter() {
+            println!("{:?}\n", tok);
+        }
+        // let mut parser = parser::Parser::new(tokens.as_ref().unwrap());
+        // let ast = parser.block();
+        // println!("ast: {:?}", ast);
     }
 }
