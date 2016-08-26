@@ -354,6 +354,13 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                             } else {
                                 ts.push(Tok::DDot);
                             }
+                        } else if c.is_some() && is_dec_num_char(c.unwrap()) {
+                            buf.clear();
+                            buf.push('.');
+                            buf.push(c.unwrap());
+                            c = chars.next();
+                            col += 1;
+                            mode = Mode::Number;
                         } else {
                             ts.push(Tok::Dot);
                         }

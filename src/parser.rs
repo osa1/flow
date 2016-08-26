@@ -349,6 +349,7 @@ impl<'a> Parser<'a> {
                 self.expect_tok(Tok::Assign);
                 let mut explist = vec![self.exp()];
                 while &self.ts[self.pos] == &Tok::Comma {
+                    self.pos += 1; // skip ,
                     explist.push(self.exp());
                 }
 
