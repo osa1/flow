@@ -1,7 +1,6 @@
 use ast::*;
 use lexer::Tok;
 
-
 pub struct Parser<'a> {
     ts: &'a [Tok],
     pos: usize,
@@ -316,7 +315,7 @@ impl<'a> Parser<'a> {
         let mut explist = vec![];
         if self.pos < self.ts.len() && self.cur_tok_() != &Tok::Semic && !stat_follow(&self.ts[self.pos]) {
             explist.push(self.exp());
-            while &self.ts[self.pos] == &Tok::Comma {
+            while self.cur_tok_() == &Tok::Comma {
                 self.skip(); // skip ,
                 explist.push(self.exp());
             }
@@ -339,7 +338,7 @@ impl<'a> Parser<'a> {
             Exp::Var(var) => {
                 // assignment
                 let mut varlist = vec![var];
-                while &self.ts[self.pos] == &Tok::Comma {
+                while self.cur_tok_() == &Tok::Comma {
                     self.skip(); // skip ,
                     match *self.suffixedexp() {
                         Exp::Var(var) => varlist.push(var),
@@ -350,7 +349,7 @@ impl<'a> Parser<'a> {
                 // not a "local" assignment, so a '= <exp>' has to follow
                 self.expect_tok(Tok::Assign);
                 let mut explist = vec![self.exp()];
-                while &self.ts[self.pos] == &Tok::Comma {
+                while self.cur_tok_() == &Tok::Comma {
                     self.skip(); // skip ,
                     explist.push(self.exp());
                 }
@@ -374,19 +373,18 @@ impl<'a> Parser<'a> {
         let mut e0 = self.exp0();
 
         loop {
-            match self.cur_tok() {
-                Tok::LParen | Tok::SLit(_) | Tok::LBrace | Tok::Colon => {
+            match unsafe { self.ts.get_unchecked(self.pos) } {
+                &Tok::LParen | &Tok::SLit(_) | &Tok::LBrace | &Tok::Colon => {
                     // function or method call
-                    // TODO: we redundantly copy string literals here
                     e0 = Box::new(Exp::FunCall(self.funcall(e0)))
                 },
-                Tok::Dot => {
+                &Tok::Dot => {
                     // field selection
                     self.skip(); // consume .
                     let name = self.name();
                     e0 = Box::new(Exp::Var(Var::Select(e0, Box::new(Exp::String(name.into_bytes())))))
                 },
-                Tok::LBracket => {
+                &Tok::LBracket => {
                     // field selection
                     self.skip(); // consume [
                     let field = self.exp();
@@ -408,7 +406,7 @@ impl<'a> Parser<'a> {
 impl<'a> Parser<'a> {
 
     fn binop(&mut self) -> Option<Binop> {
-        match &self.ts[self.pos] {
+        match self.cur_tok_() {
             &Tok::Plus => Some(Binop::Add),
             &Tok::Minus => Some(Binop::Sub),
             &Tok::Star => Some(Binop::Mul),
@@ -435,7 +433,7 @@ impl<'a> Parser<'a> {
     }
 
     fn unop(&mut self) -> Option<Unop> {
-        match &self.ts[self.pos] {
+        match self.cur_tok_() {
             &Tok::Minus => Some(Unop::Neg),
             &Tok::Not => Some(Unop::Not),
             &Tok::Sh => Some(Unop::Len),
@@ -495,7 +493,7 @@ impl<'a> Parser<'a> {
     fn constructor(&mut self) -> Box<Exp> {
         let mut fields = vec![];
 
-        if &self.ts[self.pos] != &Tok::RBrace {
+        if self.cur_tok_() != &Tok::RBrace {
             fields.push(self.field());
             while self.cur_tok_() == &Tok::Comma || self.cur_tok_() == &Tok::Semic {
                 self.skip(); // skip , or ;
@@ -626,15 +624,15 @@ impl<'a> Parser<'a> {
 
         let mut args = vec![];
         let mut vararg = false;
-        if &self.ts[self.pos] != &Tok::RParen {
-            if &self.ts[self.pos] == &Tok::Ellipsis {
+        if self.cur_tok_() != &Tok::RParen {
+            if self.cur_tok_() == &Tok::Ellipsis {
                 self.skip();
                 vararg = true;
             } else {
                 args.push(self.name());
-                while &self.ts[self.pos] == &Tok::Comma {
+                while self.cur_tok_() == &Tok::Comma {
                     self.skip(); // skip ,
-                    if &self.ts[self.pos] == &Tok::Ellipsis {
+                    if self.cur_tok_() == &Tok::Ellipsis {
                         self.skip();
                         vararg = true;
                     } else {
