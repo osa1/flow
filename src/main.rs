@@ -8,6 +8,7 @@ mod cfg;
 mod lexer;
 mod parser;
 mod uniq;
+mod utils;
 mod var;
 
 #[cfg(test)]

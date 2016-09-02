@@ -3,6 +3,7 @@ use cfg::{Atom, BasicBlock, CFGBuilder, LHS, RHS, Stat};
 use cfg;
 use lexer::Tok;
 use uniq::UniqCounter;
+use utils::Either;
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -823,8 +824,71 @@ impl<'a> Parser<'a> {
         e0
     }
 
-    fn suffixedexp_stat(&mut self) {
-        unimplemented!()
+    fn lhs_to_atom(&mut self, lhs : LHS) -> Atom {
+        match lhs {
+            LHS::Var(var) => Atom::Var(var),
+            LHS::Tbl(var, sel) => {
+                let ret = self.fresh_var();
+                self.add_stat(Stat::Assign(LHS::Var(ret), RHS::ReadTbl(Atom::Var(var), sel)));
+                Atom::Var(ret)
+            },
+        }
+    }
+
+    fn atom_lhs_to_atom(&mut self, lhs_atom : Either<Atom, LHS>) -> Atom {
+        match lhs_atom {
+            Either::Left(atom) => atom,
+            Either::Right(lhs) => self.lhs_to_atom(lhs),
+        }
+    }
+
+    fn atom_to_var(&mut self, atom : Atom) -> cfg::Var {
+        match atom {
+            Atom::Var(var) => var,
+            _ => {
+                let ret = self.fresh_var();
+                self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Atom(atom)));
+                ret
+            }
+        }
+    }
+
+    /// Parse a single assignment LHS or function call.
+    fn suffixedexp_stat(&mut self) -> Either<Atom, LHS> {
+        let mut last : Either<Atom, LHS> = Either::Left(self.exp0());
+
+        loop {
+            match unsafe { self.ts.get_unchecked(self.pos) } {
+                &Tok::LParen | &Tok::SLit(_) | &Tok::LBrace | &Tok::Colon => {
+                    last = {
+                        let atom = self.atom_lhs_to_atom(last);
+                        Either::Left(self.funcall(atom))
+                    };
+                },
+                &Tok::Dot => {
+                    last = {
+                        // field selection
+                        let atom = self.atom_lhs_to_atom(last);
+                        self.skip(); // consume .
+                        let name = self.name();
+                        Either::Right(LHS::Tbl(self.atom_to_var(atom), Atom::String(name)))
+                    };
+                },
+                &Tok::LBracket => {
+                    // field selection
+                    last = {
+                        self.skip(); // consume [
+                        let atom = self.atom_lhs_to_atom(last);
+                        let field = self.exp();
+                        self.expect_tok(Tok::RBracket);
+                        Either::Right(LHS::Tbl(self.atom_to_var(atom), field))
+                    };
+                },
+                _ => { break; },
+            }
+        }
+
+        last
     }
 
     // name | '(' exp ')'
