@@ -83,6 +83,12 @@ pub enum Exp {
     Unop(Unop, Box<Exp>),
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub enum Number {
+    Int(i64),
+    Float(f64),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum TblField {
     /// [exp] = exp

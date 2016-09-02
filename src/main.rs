@@ -35,8 +35,8 @@ fn main() {
         // }
         println!("total {} tokens", tokens.len());
         tokens.push(lexer::Tok::EOS);
-        let mut parser = parser::Parser::new(&tokens);
-        let ast = parser.block();
-        println!("ast: {:?}", ast);
+        // let mut parser = parser::Parser::new(&tokens);
+        // let ast = parser.block();
+        // println!("ast: {:?}", ast);
     }
 }

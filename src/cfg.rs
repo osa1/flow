@@ -8,6 +8,9 @@ use std::collections::HashSet;
 use std::iter::Iterator;
 use std::mem;
 
+use ast;
+use uniq::Uniq;
+
 macro_rules! set {
     ( $( $x:expr ),* ) => {
         {
@@ -20,6 +23,8 @@ macro_rules! set {
     };
 }
 
+////////////////////////////////////////////////////////////////////////////////
+
 // Basic blocks are kept abstract and only manipulated via the CFG they belong.
 // Internally we don't use this type because we don't get required instances of
 // u32 automatically (no GND).
@@ -28,20 +33,135 @@ pub struct BasicBlock(usize);
 
 pub static ENTRY_BLOCK : BasicBlock = BasicBlock(0);
 
-pub struct CFG {
-    /// INVARIANT: There's at least one basic block: First block is the entry.
+////////////////////////////////////////////////////////////////////////////////
+
+/// Variables in CFGs are just Uniqs. Keep a symbol table if you need to attach
+/// more information to the variables.
+pub type Var = Uniq;
+
+////////////////////////////////////////////////////////////////////////////////
+
+pub struct CFGBuilder {
+    /// INVARIANT: There's at least ENTRY_BLOCK.
     blocks: Vec<BasicBlock_>,
 
-    /// Number of variables defined in the CFG.
-    vars: u32,
+    /// Arguments of the function.
+    args: Vec<Var>,
+
+    /// Current basic block. New statements are added here. Initially the entry
+    /// block.
+    cur_bb: BasicBlock,
 }
 
-/// Variables.
-#[derive(Copy, Clone, Debug)]
-pub struct Var(u32); // a variable goes by its unique integer
+#[derive(Debug)]
+pub enum Stat {
+    Assign(LHS, RHS),
+
+    // TODO: Function should really be a variable
+    FunCall(Atom, Vec<Atom>),
+
+    /// (lhss, fn, args)
+    MultiAssign(Vec<Var>, Var, Vec<Atom>),
+
+    // Phi(Var, Vec<Var>),
+}
+
+#[derive(Debug)]
+pub enum LHS {
+    /// Table index
+    Tbl(Var, Atom),
+    /// Variable
+    Var(Var),
+}
+
+#[derive(Debug, Clone)]
+pub enum Atom {
+    Nil,
+    Var(Var),
+    Bool(bool),
+    Number(ast::Number),
+    String(String),
+}
+
+#[derive(Debug)]
+pub enum RHS {
+    Atom(Atom),
+    // TODO: Function should really be a variable
+    FunCall(Atom, Vec<Atom>),
+    NewTbl,
+    // TODO: Table should really be a variable
+    ReadTbl(Atom, Atom),
+    Binop(Atom, ast::Binop, Atom),
+    Unop(ast::Unop, Atom),
+}
+
+#[derive(Debug)]
+pub enum Terminator {
+    /// Place holder during construction.
+    NotTerminated,
+
+    Jmp(BasicBlock),
+    CondJmp(Atom, BasicBlock, BasicBlock),
+    Ret(Vec<Atom>),
+
+    // TODO: switch etc. for optimizations?
+}
+
+impl CFGBuilder {
+    pub fn new(args : Vec<Var>) -> CFGBuilder {
+        CFGBuilder {
+            blocks: vec![BasicBlock_::new()],
+            args: args,
+            cur_bb: ENTRY_BLOCK,
+        }
+    }
+
+    /// Add a statement to the current basic block.
+    pub fn add_stat(&mut self, stat : Stat) {
+        unsafe { self.blocks.get_unchecked_mut(self.cur_bb.0) }.stats.push(stat);
+    }
+
+    /// Terminate current basic block with the given terminator.
+    pub fn terminate(&mut self, term : Terminator) {
+        unsafe { self.blocks.get_unchecked_mut(self.cur_bb.0) }.term = term;
+    }
+
+    /// Create a fresh basic block.
+    pub fn new_bb(&mut self) -> BasicBlock {
+        let ret = BasicBlock(self.blocks.len());
+        self.blocks.push(BasicBlock_::new());
+        ret
+    }
+
+    /// Set current basic block.
+    pub fn set_bb(&mut self, bb : BasicBlock) {
+        debug_assert!(bb.0 < self.blocks.len());
+        self.cur_bb = bb;
+    }
+
+    /// Finalize the builder and generate a CFG.
+    pub fn build(self) -> CFG {
+        unimplemented!()
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+
+pub struct CFG {
+    /// INVARIANT: There's at least one basic block: ENTRY_BLOCK.
+    blocks: Vec<BasicBlock_>,
+
+    /// Arguments of the function.
+    args: Vec<Var>,
+}
 
 #[derive(Debug)]
 struct BasicBlock_ {
+    /// Statements of this basic block.
+    stats: Vec<Stat>,
+
+    term: Terminator,
+
     /// Predecessors of this basic block in the CFG.
     preds: BitSet,
 
@@ -64,10 +184,27 @@ struct BasicBlock_ {
     dom_frontier: BitSet,
 
     /// Variables defined in this block.
-    vars: HashSet<u32>,
+    vars: HashSet<Var>,
 
     /// Phi nodes in this block.
-    phis: HashSet<u32>,
+    phis: HashSet<Var>,
+}
+
+impl BasicBlock_ {
+    pub fn new() -> BasicBlock_ {
+        BasicBlock_ {
+            stats: Vec::new(),
+            term: Terminator::NotTerminated,
+            preds: BitSet::new(),
+            succs: BitSet::new(),
+            dominators: BitSet::new(),
+            immediate_dom: None,
+            dom_tree_children: BitSet::new(),
+            dom_frontier: BitSet::new(),
+            vars: HashSet::new(),
+            phis: HashSet::new(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -84,23 +221,13 @@ impl<'b> Iterator for BasicBlockIter<'b> {
 }
 
 impl CFG {
-    pub fn new() -> CFG {
+    pub fn new(args : Vec<Var>) -> CFG {
         let mut doms = BitSet::new();
-        doms.insert(0);
+        doms.insert(ENTRY_BLOCK.0);
 
         CFG {
-            blocks: vec![BasicBlock_ {
-                preds: BitSet::new(),
-                succs: BitSet::new(),
-                dominators: doms,
-                immediate_dom: None,
-                dom_tree_children: BitSet::new(),
-                dom_frontier: BitSet::new(),
-                vars: HashSet::new(),
-                phis: HashSet::new(),
-            }],
-
-            vars: 0,
+            blocks: vec![BasicBlock_::new()],
+            args: args,
         }
     }
 
@@ -110,6 +237,8 @@ impl CFG {
         doms.insert(ret);
 
         self.blocks.push(BasicBlock_ {
+            stats: Vec::new(),
+            term: Terminator::NotTerminated,
             preds: BitSet::new(),
             succs: BitSet::new(),
             dominators: doms,
@@ -121,12 +250,6 @@ impl CFG {
         });
 
         BasicBlock(ret)
-    }
-
-    pub fn new_var(&mut self) -> Var {
-        let ret = Var(self.vars);
-        self.vars += 1;
-        ret
     }
 
     /// Make `node1` a predecessor of `node2`. Also makes `node2` a successor of
@@ -186,15 +309,15 @@ impl CFG {
     }
 
     pub fn has_phi(&self, block : BasicBlock, var : Var) -> bool {
-        self.blocks[block.0].phis.contains(&var.0)
+        self.blocks[block.0].phis.contains(&var)
     }
 
     pub fn insert_phi(&mut self, block : BasicBlock, var : Var) {
-        self.blocks[block.0].phis.insert(var.0);
+        self.blocks[block.0].phis.insert(var);
     }
 
     pub fn add_defined_var(&mut self, block : BasicBlock, var : Var) {
-        self.blocks[block.0].vars.insert(var.0);
+        self.blocks[block.0].vars.insert(var);
     }
 
     /// Compute dominators, dominator tree, dominance frontier etc. DO NOT
@@ -360,10 +483,10 @@ impl CFG {
     /// Insert phi functions.
     fn insert_phis(&mut self) {
         // definition sites of variables
-        let mut defsites : HashMap<u32, HashSet<BasicBlock>> = HashMap::new();
+        let mut defsites : HashMap<Uniq, HashSet<BasicBlock>> = HashMap::new();
 
         // all variables defined in the cfg
-        let mut vars : HashSet<u32> = HashSet::new();
+        let mut vars : HashSet<Var> = HashSet::new();
 
         for block in 0 .. self.n_blocks() {
             for var in self.blocks[block].vars.iter().cloned() {
@@ -380,12 +503,11 @@ impl CFG {
             }
         }
 
-        for var_ in vars.iter().cloned() {
-            let var = Var(var_);
+        for var in vars.iter().cloned() {
 
             // whenever node x contains a definition of some variable a, any
             // node in the dominance frontier of x needs a phi for a
-            let mut next_workset = defsites.get(&var_).unwrap().clone();
+            let mut next_workset = defsites.get(&var).unwrap().clone();
             let mut workset : HashSet<BasicBlock> = HashSet::new();
 
             while !next_workset.is_empty() {
@@ -401,7 +523,7 @@ impl CFG {
                             self.insert_phi(dom, var);
                             // now that `dom` has a new definition, we need to work
                             // it, to be able to update its dominance frontier
-                            if !defsites.get(&var_).unwrap().contains(&dom) {
+                            if !defsites.get(&var).unwrap().contains(&dom) {
                                 next_workset.insert(dom);
                             }
                         }
@@ -565,9 +687,10 @@ mod test {
         cfg.mk_pred(b6, b7);
         cfg.mk_pred(b7, b2);
 
-        let var_i = cfg.new_var();
-        let var_j = cfg.new_var();
-        let var_k = cfg.new_var();
+        let mut var_gen = UniqCounter::new();
+        let var_i = var_gen.fresh();
+        let var_j = var_gen.fresh();
+        let var_k = var_gen.fresh();
 
         cfg.add_defined_var(b1, var_i);
         cfg.add_defined_var(b1, var_j);

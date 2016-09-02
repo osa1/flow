@@ -1,7 +1,8 @@
 use std::fmt;
+use std;
 
 /// A unique number given to identifiers.
-#[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub struct Uniq(u32);
 
 // Uniques are 32-bit wide. First 7-bit is used as an ascii character when
@@ -9,24 +10,41 @@ pub struct Uniq(u32);
 
 const UNIQ_MASK : u32 = 0x01FFFFFF;
 
+fn fmt_tagged_uniq(u : u32, f : &mut fmt::Formatter) -> std::result::Result<(), std::fmt::Error> {
+    write!(f, "{}_{}", ((u >> 25) as u8) as char, u & UNIQ_MASK)
+}
+
 impl fmt::Debug for Uniq {
     fn fmt(&self, f : &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        write!(f, "{}_{}", ((self.0 >> 25) as u8) as char, self.0 & UNIQ_MASK)
+        fmt_tagged_uniq(self.0, f)
     }
 }
 
-pub fn bump_uniq(uniq : Uniq) -> Uniq {
-    // check for overflows
-    debug_assert!(uniq.0 & UNIQ_MASK < UNIQ_MASK);
-    Uniq(uniq.0 + 1)
+/// Uniq generator.
+pub struct UniqCounter(u32);
+
+impl fmt::Debug for UniqCounter {
+    fn fmt(&self, f : &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        fmt_tagged_uniq(self.0, f)
+    }
 }
 
-/// Create a uniq counter for a given tag. A tag should be used once, and is
-/// 7-bit wide! Use with caution.
-pub fn init_uniq(tag : u8) -> Uniq {
-    debug_assert!(tag <= 0b01111111);
-    // TODO: assert that tag is not used before! bugs would be very hard to find
-    Uniq((tag as u32) << 25)
+impl UniqCounter {
+    /// Create a uniq counter for a given tag. A tag should be used once, and is
+    /// 7-bit wide! Use with caution.
+    pub fn new(tag : u8) -> UniqCounter {
+        debug_assert!(tag <= 0b01111111);
+        // TODO: assert that tag is not used before! bugs would be very hard to find
+        UniqCounter((tag as u32) << 25)
+    }
+
+    pub fn fresh(&mut self) -> Uniq {
+        // check for overflows
+        debug_assert!(self.0 & UNIQ_MASK < UNIQ_MASK);
+        let ret = Uniq(self.0 + 1);
+        self.0 += 1;
+        ret
+    }
 }
 
 #[test]
