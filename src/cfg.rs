@@ -227,12 +227,16 @@ impl<'b> Iterator for BasicBlockIter<'b> {
 }
 
 impl CFG {
-    pub fn new(args : Vec<Var>) -> CFG {
-        let mut doms = BitSet::new();
-        doms.insert(ENTRY_BLOCK.0);
+    // This is only used in tests.
+    fn new(args : Vec<Var>) -> CFG {
+        let mut entry_block_doms = BitSet::new();
+        entry_block_doms.insert(ENTRY_BLOCK.0);
+
+        let mut entry_block = BasicBlock_::new();
+        entry_block.dominators = entry_block_doms;
 
         CFG {
-            blocks: vec![BasicBlock_::new()],
+            blocks: vec![entry_block],
             args: args,
         }
     }
@@ -767,12 +771,13 @@ impl ast::Number {
 #[cfg(test)]
 mod test {
     use super::*;
+    use uniq::UniqCounter;
 
     use std::collections::HashSet;
 
     #[test]
     fn dom_test_1() {
-        let mut cfg = CFG::new();
+        let mut cfg = CFG::new(vec![]);
         let block1 = cfg.new_block();
         let block2 = cfg.new_block();
 
@@ -797,7 +802,7 @@ mod test {
     #[test]
     fn dom_test_2() {
         // Figure 18.3 (a)
-        let mut cfg = CFG::new();
+        let mut cfg = CFG::new(vec![]);
         let b1  = cfg.new_block();
         let b2  = cfg.new_block();
         let b3  = cfg.new_block();
@@ -850,7 +855,7 @@ mod test {
     #[test]
     fn dom_test_3() {
         // Figure 19.4
-        let mut cfg = CFG::new();
+        let mut cfg = CFG::new(vec![]);
         let b1  = cfg.new_block();
         let b2  = cfg.new_block();
         let b3  = cfg.new_block();
@@ -898,7 +903,7 @@ mod test {
     #[test]
     fn phi_test_1() {
         // Figure 19.4
-        let mut cfg = CFG::new();
+        let mut cfg = CFG::new(vec![]);
         let b1  = cfg.new_block();
         let b2  = cfg.new_block();
         let b3  = cfg.new_block();
@@ -917,7 +922,7 @@ mod test {
         cfg.mk_pred(b6, b7);
         cfg.mk_pred(b7, b2);
 
-        let mut var_gen = UniqCounter::new();
+        let mut var_gen = UniqCounter::new(b't');
         let var_i = var_gen.fresh();
         let var_j = var_gen.fresh();
         let var_k = var_gen.fresh();
