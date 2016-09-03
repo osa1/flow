@@ -2,7 +2,7 @@ use ast::*;
 use cfg::{Atom, BasicBlock, CFGBuilder, LHS, RHS, Stat};
 use cfg;
 use lexer::Tok;
-use uniq::UniqCounter;
+use uniq::{UniqCounter, ENTRY_UNIQ};
 use utils::Either;
 
 use std::collections::HashMap;
@@ -10,26 +10,42 @@ use std::collections::HashSet;
 use std;
 
 pub struct Parser<'a> {
+    /// The token stream.
     ts: &'a [Tok],
+
+    /// Current position in the token stream.
+    /// TODO: Maybe remove this and update the slice instead.
     pos: usize,
 
     /// Closure definitions.
     defs: HashMap<cfg::Var, cfg::CFG>,
 
     /// Current CFG. New statements and basic blocks are added here.
-    cfg: cfg::CFGBuilder,
+    cur_cfg: cfg::CFGBuilder,
 
+    /// `Var` for `cur_cfg`. e.g. what definition we are parsing right now.
+    cur_var: cfg::Var,
+
+    /// Program-level global variables.
     global_vars: HashMap<String, cfg::Var>,
+
+    /// Lexical scopes.
     local_vars: Vec<HashMap<String, cfg::Var>>,
 
     /// Indices of closures scope in `local_vars` vector.
     /// TODO: Give some examples.
     clo_scope: Vec<CloScope>,
 
+    /// Where to jump on `break`. Push continuation when entering a loop. Pop it
+    /// afterwards.
+    loop_conts: Vec<BasicBlock>,
+
+    /// Where to jump on goto. Push an empty map on scope entry. Pop afterwards.
+    /// It's a compile-time error to jump to another scope.
+    labels: Vec<HashMap<String, BasicBlock>>,
+
     /// Variable counter used to generate fresh variables.
     var_gen: UniqCounter,
-
-    // TODO: Need a symbol table to map uniqs to original names and positions.
 }
 
 struct CloScope {
@@ -61,22 +77,29 @@ fn stat_follow(tok : &Tok) -> bool {
 
 impl<'a> Parser<'a> {
     pub fn new(ts: &'a [Tok]) -> Parser<'a> {
+        // instead of doing bounds checking we rely on this terminator
         debug_assert!(ts.len() > 0 && &ts[ts.len() - 1] == &Tok::EOS);
 
         Parser {
             ts: ts,
             pos: 0,
             defs: HashMap::new(),
-            cfg: cfg::CFGBuilder::new(vec![]),
+            cur_var: ENTRY_UNIQ, // special
+            cur_cfg: cfg::CFGBuilder::new(vec![]),
             global_vars: HashMap::new(),
             local_vars: vec![],
             clo_scope: vec![],
+            loop_conts: vec![],
+            labels: vec![HashMap::new()],
             var_gen: UniqCounter::new(b'p'),
         }
     }
 
-    pub fn get_cfg(self) -> cfg::CFG {
-        self.cfg.build()
+    pub fn parse(mut self) -> HashMap<cfg::Var, cfg::CFG> {
+        self.block();
+        let mut defs = self.defs;
+        defs.insert(self.cur_var, self.cur_cfg.build());
+        defs
     }
 
     /// Tok under cursor.
@@ -175,6 +198,7 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn enter_scope(&mut self) {
         self.local_vars.push(HashMap::new());
+        self.labels.push(HashMap::new());
     }
 
     #[inline(always)]
@@ -187,6 +211,7 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn exit_scope(&mut self) {
         self.local_vars.pop().unwrap();
+        self.labels.pop().unwrap();
     }
 
     #[inline(always)]
@@ -202,32 +227,32 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn add_stat(&mut self, stat : cfg::Stat) {
-        self.cfg.add_stat(stat);
+        self.cur_cfg.add_stat(stat);
     }
 
     #[inline(always)]
     fn terminate(&mut self, bb : cfg::BasicBlock) {
-        self.cfg.terminate(cfg::Terminator::Jmp(bb));
+        self.cur_cfg.terminate(cfg::Terminator::Jmp(bb));
     }
 
     #[inline(always)]
     fn cond_terminate(&mut self, cond : Atom, then_bb : cfg::BasicBlock, else_bb : cfg::BasicBlock) {
-        self.cfg.terminate(cfg::Terminator::CondJmp(cond, then_bb, else_bb));
+        self.cur_cfg.terminate(cfg::Terminator::CondJmp(cond, then_bb, else_bb));
     }
 
     #[inline(always)]
     fn ret(&mut self, exps : Vec<Atom>) {
-        self.cfg.terminate(cfg::Terminator::Ret(exps));
+        self.cur_cfg.terminate(cfg::Terminator::Ret(exps));
     }
 
     #[inline(always)]
     fn new_bb(&mut self) -> cfg::BasicBlock {
-        self.cfg.new_bb()
+        self.cur_cfg.new_bb()
     }
 
     #[inline(always)]
     fn set_bb(&mut self, bb : cfg::BasicBlock) {
-        self.cfg.set_bb(bb)
+        self.cur_cfg.set_bb(bb)
     }
 }
 
@@ -358,7 +383,7 @@ impl<'a> Parser<'a> {
         self.terminate(cond_bb); // loop
         self.expect_tok(Tok::End);
 
-        self.cfg.set_bb(cont_bb);
+        self.set_bb(cont_bb);
     }
 
     // <block> end
@@ -605,10 +630,14 @@ impl<'a> Parser<'a> {
     }
 
     fn labelstat(&mut self) {
-        unimplemented!()
-        // let label = self.name();
-        // self.expect_tok(Tok::DColon);
-        // Stmt::Label(label)
+        let label = self.name();
+        self.expect_tok(Tok::DColon);
+
+        let new_bb = self.new_bb();
+        self.terminate(new_bb);
+        self.set_bb(new_bb);
+        let n_labels = self.labels.len();
+        self.labels[n_labels - 1].insert(label, new_bb);
     }
 
     fn returnstat(&mut self) {
@@ -624,14 +653,27 @@ impl<'a> Parser<'a> {
     }
 
     fn breakstat(&mut self) {
-        unimplemented!()
-        // Stmt::Break
+        if self.loop_conts.len() == 0 {
+            panic!("break: not in loop");
+        }
+        let jmp_target = self.loop_conts[self.loop_conts.len() - 1];
+        // statements after break should not be added to the current bb
+        let temp_bb = self.new_bb();
+        self.terminate(jmp_target);
+        self.set_bb(temp_bb);
     }
 
     fn gotostat(&mut self) {
-        unimplemented!()
-        // let lbl = self.name();
-        // Stmt::Goto(lbl)
+        let lbl = self.name();
+        let n_labels = self.labels.len();
+        match self.labels[n_labels - 1].get(&lbl).cloned() {
+            Some(bb) => {
+                self.terminate(bb);
+            },
+            None => {
+                panic!("goto: Can't find target {}", lbl);
+            },
+        }
     }
 
     // function call or assignment. Both start with a <suffixedexp>.
@@ -763,7 +805,7 @@ impl<'a> Parser<'a> {
 
     fn simpleexp(&mut self) -> cfg::Atom {
         match self.cur_tok() {
-            Tok::Num(n) => unimplemented!(), // { self.skip(); Atom::Number(n) },
+            Tok::Num(n) => { self.skip(); Atom::Number(n) },
             Tok::SLit(s) => { self.skip(); Atom::String(s) },
             Tok::Nil => { self.skip(); Atom::Nil },
             Tok::True => { self.skip(); Atom::Bool(true) }
@@ -1072,9 +1114,9 @@ impl<'a> Parser<'a> {
         }
 
         self.expect_tok(Tok::RParen);
-        let mut fun_cfg = std::mem::replace(&mut self.cfg, CFGBuilder::new(args));
+        let mut fun_cfg = std::mem::replace(&mut self.cur_cfg, CFGBuilder::new(args));
         self.block();
-        std::mem::swap(&mut self.cfg, &mut fun_cfg);
+        std::mem::swap(&mut self.cur_cfg, &mut fun_cfg);
         self.expect_tok(Tok::End);
 
         let captured = self.exit_closure();

@@ -60,13 +60,13 @@ pub enum Stat {
     // TODO: Function should really be a variable
     FunCall(Atom, Vec<Atom>),
 
-    /// (lhss, fn, args)
-    MultiAssign(Vec<Var>, Var, Vec<Atom>),
+    /// (lhss, rhs)
+    MultiAssign(Vec<LHS>, RHS),
 
     // Phi(Var, Vec<Var>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum LHS {
     /// Table index
     Tbl(Var, Atom),
@@ -141,12 +141,18 @@ impl CFGBuilder {
 
     /// Finalize the builder and generate a CFG.
     pub fn build(self) -> CFG {
-        unimplemented!()
+        let mut cfg = CFG {
+            blocks: self.blocks,
+            args: self.args,
+        };
+        cfg.build();
+        cfg
     }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Debug)]
 pub struct CFG {
     /// INVARIANT: There's at least one basic block: ENTRY_BLOCK.
     blocks: Vec<BasicBlock_>,

@@ -25,19 +25,17 @@ fn main() {
         let contents = {
             let mut file = File::open(file).unwrap();
             let mut contents : String = String::new();
-            file.read_to_string(&mut contents);
+            file.read_to_string(&mut contents).unwrap();
             contents
         };
 
         let mut tokens : Vec<lexer::Tok> = lexer::tokenize(&contents).unwrap();
-        println!("tokens: {:?}", tokens);
-        // for tok in tokens.as_ref().unwrap().iter() {
-        //     println!("{:?}\n", tok);
-        // }
-        println!("total {} tokens", tokens.len());
         tokens.push(lexer::Tok::EOS);
-        // let mut parser = parser::Parser::new(&tokens);
-        // let ast = parser.block();
-        // println!("ast: {:?}", ast);
+        let parser = parser::Parser::new(&tokens);
+        let defs = parser.parse();
+        for (var, cfg) in defs.iter() {
+            println!("var: {:?}", var);
+            println!("{:?}", cfg);
+        }
     }
 }

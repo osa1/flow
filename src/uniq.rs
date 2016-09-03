@@ -5,6 +5,8 @@ use std;
 #[derive(PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Hash)]
 pub struct Uniq(u32);
 
+pub const ENTRY_UNIQ : Uniq = Uniq(0);
+
 // Uniques are 32-bit wide. First 7-bit is used as an ascii character when
 // showing.
 

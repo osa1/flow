@@ -1,7 +1,9 @@
 use std::char;
 use std;
 
-#[derive(PartialEq, Eq, Debug, Clone)]
+use ast::Number;
+
+#[derive(PartialEq, Debug, Clone)]
 pub enum Tok {
     Plus,              // +
     Minus,             // -
@@ -60,7 +62,7 @@ pub enum Tok {
     Until,             // until
     While,             // while
 
-    Num(String),       // number constant
+    Num(Number),       // number constant
 
     /// String literals. Interpreted.
     /// (e.g. "\t" appears here as a tab character, not as '\' 't')
@@ -74,7 +76,7 @@ pub enum Tok {
     EOS,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct TokPos {
     tok: Tok,
     line: i32,
@@ -153,6 +155,35 @@ macro_rules! fail {
 }
 
 pub type LexerError = String;
+
+fn number_to_float_number(n : Number) -> Number {
+    match n {
+        Number::Int(i) => Number::Float(i as f64),
+        _ => n,
+    }
+}
+
+fn parse_int(s : &str) -> Option<i64> {
+    // TODO: port from lobject.c:l_str2int
+    s.parse().ok()
+}
+
+fn parse_float(s : &str) -> Option<f64> {
+    // TODO: port from lobject.c:l_str2d
+    s.parse().ok()
+}
+
+fn parse_num(s : &str) -> Result<Number, LexerError> {
+    match parse_int(s) {
+        None => {
+            match parse_float(s) {
+                None => Err(format!("Can't parse number {}", s)),
+                Some(f) => Ok(Number::Float(f)),
+            }
+        },
+        Some(i) => Ok(Number::Int(i)),
+    }
+}
 
 pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
     let mut ts = vec![];
@@ -502,8 +533,14 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                                 _ => {
                                     // end of the literal
                                     buf.push(c1);
-                                    ts.push(Tok::Num(std::mem::replace(&mut buf, String::new())));
-                                    mode = Mode::Top;
+                                    let num_str = std::mem::replace(&mut buf, String::new());
+                                    match parse_num(&num_str) {
+                                        Err(err) => { return Err(err); },
+                                        Ok(n) => {
+                                            ts.push(Tok::Num(n));
+                                            mode = Mode::Top;
+                                        }
+                                    }
                                 },
                             }
                         }
@@ -523,14 +560,26 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                                 // TODO: This is not entirely correct. What
                                 // happens if we see something like `0x+1`?
                                 buf.push(c1.unwrap());
-                                ts.push(Tok::Num(std::mem::replace(&mut buf, String::new())));
-                                mode = Mode::Top;
+                                let num_str = std::mem::replace(&mut buf, String::new());
+                                match parse_num(&num_str) {
+                                    Err(err) => { return Err(err); }
+                                    Ok(n) => {
+                                        ts.push(Tok::Num(n));
+                                        mode = Mode::Top;
+                                    }
+                                }
                             }
                         }
                     },
                     _ => {
-                        ts.push(Tok::Num(std::mem::replace(&mut buf, String::new())));
-                        mode = Mode::Top;
+                        let num_str = std::mem::replace(&mut buf, String::new());
+                        match parse_num(&num_str) {
+                            Err(err) => { return Err(err); }
+                            Ok(n) => {
+                                ts.push(Tok::Num(n));
+                                mode = Mode::Top;
+                            }
+                        }
                     },
                 }
             },
