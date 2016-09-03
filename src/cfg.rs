@@ -5,6 +5,7 @@ use std::collections::hash_map::Entry;
 use std::collections::hash_set;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::io::Write;
 use std::iter::Iterator;
 use std::mem;
 
@@ -539,6 +540,221 @@ impl CFG {
         }
     }
 }
+
+////////////////////////////////////////////////////////////////////////////////
+// Printers
+////////////////////////////////////////////////////////////////////////////////
+
+impl CFG {
+    pub fn print(&self, buf : &mut Vec<u8>) {
+        for (block_idx, block) in self.blocks.iter().enumerate() {
+            write!(buf, "basic block {}:\n", block_idx).unwrap();
+            block.print(buf);
+            write!(buf, "\n\n").unwrap();
+        }
+    }
+}
+
+impl BasicBlock_ {
+    pub fn print(&self, buf : &mut Vec<u8>) {
+        for stat in self.stats.iter() {
+            write!(buf, "  ").unwrap();
+            stat.print(buf);
+            write!(buf, "\n").unwrap();
+        }
+        write!(buf, "  ").unwrap();
+        self.term.print(buf);
+    }
+}
+
+impl BasicBlock {
+    pub fn print(&self, buf : &mut Vec<u8>) {
+        write!(buf, "{:?}", self.0).unwrap();
+    }
+}
+
+impl Terminator {
+    pub fn print(&self, buf : &mut Vec<u8>) {
+        match self {
+            &Terminator::NotTerminated => { write!(buf, "(not terminated)").unwrap(); },
+            &Terminator::Jmp(bb) => {
+                write!(buf, "jump ").unwrap();
+                bb.print(buf);
+            },
+            &Terminator::CondJmp(ref cond, then_bb, else_bb) => {
+                write!(buf, "if ").unwrap();
+                cond.print(buf);
+                write!(buf, " then ").unwrap();
+                then_bb.print(buf);
+                write!(buf, " else ").unwrap();
+                else_bb.print(buf);
+            },
+            &Terminator::Ret(ref rets) => {
+                write!(buf, "return ").unwrap();
+                let mut first = true;
+                for ret in rets {
+                    if !first { write!(buf, ", ").unwrap(); }
+                    first = false;
+                    ret.print(buf);
+                }
+            }
+        }
+    }
+}
+
+impl Stat {
+    pub fn print(&self, buf : &mut Vec<u8>) {
+        match self {
+            &Stat::Assign(ref lhs, ref rhs) => {
+                lhs.print(buf);
+                write!(buf, " = ").unwrap();
+                rhs.print(buf);
+            },
+            &Stat::FunCall(ref fun, ref args) => {
+                fun.print(buf);
+                write!(buf, "(").unwrap();
+                let mut first = true;
+                for arg in args {
+                    if !first { write!(buf, ", ").unwrap(); }
+                    first = false;
+                    arg.print(buf);
+                }
+                write!(buf, ")").unwrap();
+            },
+            &Stat::MultiAssign(ref lhss, ref rhs) => {
+                let mut first = true;
+                for lhs in lhss {
+                    if !first { write!(buf, ", ").unwrap(); }
+                    first = false;
+                    lhs.print(buf);
+                }
+                write!(buf, " = ").unwrap();
+                rhs.print(buf);
+            },
+        }
+    }
+}
+
+impl LHS {
+    pub fn print(&self, buf : &mut Vec<u8>) {
+        match self {
+            &LHS::Tbl(var, ref sel) => {
+                write!(buf, "{:?}[", var).unwrap();
+                sel.print(buf);
+                write!(buf, "]").unwrap();
+            },
+            &LHS::Var(var) => {
+                write!(buf, "{:?}", var).unwrap();
+            }
+        }
+    }
+}
+
+impl RHS {
+    pub fn print(&self, buf : &mut Vec<u8>) {
+        match self {
+            &RHS::Atom(ref atom) => atom.print(buf),
+            &RHS::FunCall(ref fun, ref args) => {
+                fun.print(buf);
+                write!(buf, "(").unwrap();
+                let mut first = true;
+                for arg in args {
+                    if !first { write!(buf, ", ").unwrap(); }
+                    first = false;
+                    arg.print(buf);
+                }
+                write!(buf, ")").unwrap();
+            },
+            &RHS::NewTbl => {
+                write!(buf, "{{}}").unwrap();
+            },
+            &RHS::ReadTbl(ref tbl, ref sel) => {
+                tbl.print(buf);
+                write!(buf, "[").unwrap();
+                sel.print(buf);
+                write!(buf, "]");
+
+            },
+            &RHS::Binop(ref a1, op, ref a2) => {
+                a1.print(buf);
+                write!(buf, " ").unwrap();
+                op.print(buf);
+                write!(buf, " ").unwrap();
+                a2.print(buf);
+            },
+            &RHS::Unop(op, ref a) => {
+                op.print(buf);
+                a.print(buf);
+            },
+        }
+    }
+}
+
+impl ast::Unop {
+    pub fn print(&self, buf : &mut Vec<u8>) {
+        let str = match *self {
+            ast::Unop::Neg => "-",
+            ast::Unop::Not => "not ",
+            ast::Unop::Len => "#",
+            ast::Unop::Complement => "~",
+        };
+        write!(buf, "{}", str).unwrap();
+    }
+}
+
+impl ast::Binop {
+    fn print(&self, buf : &mut Vec<u8>) {
+        let str = match *self {
+            ast::Binop::Add => "+",
+            ast::Binop::Sub => "-",
+            ast::Binop::Mul => "*",
+            ast::Binop::Div => "/",
+            ast::Binop::Exp => "^",
+            ast::Binop::Mod => "%",
+            ast::Binop::Concat => "..",
+            ast::Binop::LT => "<",
+            ast::Binop::LTE => "<=",
+            ast::Binop::GT => ">",
+            ast::Binop::GTE => ">=",
+            ast::Binop::EQ => "==",
+            ast::Binop::NEQ => "~=",
+            ast::Binop::And => "and",
+            ast::Binop::Or => "or",
+            ast::Binop::IDiv => "//",
+            ast::Binop::ShiftL => "<<",
+            ast::Binop::ShiftR => ">>",
+            ast::Binop::BAnd => "&&",
+            ast::Binop::BOr => "||",
+            ast::Binop::BXor => "~",
+        };
+        write!(buf, "{}", str).unwrap();
+    }
+}
+
+impl Atom {
+    pub fn print(&self, buf : &mut Vec<u8>) {
+        match self {
+            &Atom::Nil => { write!(buf, "nil").unwrap(); },
+            &Atom::Var(var) => { write!(buf, "{:?}", var).unwrap(); },
+            &Atom::Bool(b) => { write!(buf, "{}", if b { "true" } else { "false" }).unwrap(); },
+            &Atom::Number(ref n) => { n.print(buf); },
+            &Atom::String(ref s) => { write!(buf, "\"{}\"", s).unwrap(); },
+        }
+    }
+}
+
+impl ast::Number {
+    pub fn print(&self, buf : &mut Vec<u8>) {
+        match self {
+            &ast::Number::Int(i) => { write!(buf, "{}", i).unwrap(); },
+            &ast::Number::Float(f) => { write!(buf, "{}", f).unwrap(); },
+        }
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Tests
+////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod test {

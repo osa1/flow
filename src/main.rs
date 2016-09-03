@@ -35,7 +35,9 @@ fn main() {
         let defs = parser.parse();
         for (var, cfg) in defs.iter() {
             println!("var: {:?}", var);
-            println!("{:?}", cfg);
+            let mut str = String::new().into_bytes();
+            cfg.print(&mut str);
+            println!("{}", unsafe { String::from_utf8_unchecked(str) });
         }
     }
 }
