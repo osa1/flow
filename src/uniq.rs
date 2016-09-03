@@ -51,7 +51,7 @@ impl UniqCounter {
 
 #[test]
 fn uniq_test_1() {
-    let uniq = init_uniq(b'l');
+    let mut uniq = UniqCounter::new(b'l');
     assert_eq!("l_0", format!("{:?}", uniq));
-    assert_eq!("l_1", format!("{:?}", bump_uniq(uniq)));
+    assert_eq!("l_1", format!("{:?}", uniq.fresh()));
 }
