@@ -546,6 +546,15 @@ impl CFG {
 
 impl CFG {
     pub fn print(&self, buf : &mut Vec<u8>) {
+        write!(buf, "args: ").unwrap();
+        let mut first = true;
+        for arg in self.args.iter() {
+            if !first { write!(buf, ", ").unwrap(); }
+            first = false;
+            write!(buf, "{:?}", arg).unwrap();
+        }
+        write!(buf, "\n").unwrap();
+
         for (block_idx, block) in self.blocks.iter().enumerate() {
             write!(buf, "basic block {}:\n", block_idx).unwrap();
             block.print(buf);
