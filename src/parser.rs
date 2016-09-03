@@ -541,9 +541,12 @@ impl<'a> Parser<'a> {
                 self.add_stat(Stat::Assign(LHS::Var(new_lhs), RHS::ReadTbl(Atom::Var(lhs), sel)));
                 lhs = new_lhs;
             }
+
+            self.add_stat(Stat::Assign(LHS::Tbl(lhs, Atom::String((&sels[sels.len() - 1]).to_owned())),
+                                       RHS::Atom(Atom::Var(clo))));
+        } else {
+            self.add_stat(Stat::Assign(LHS::Var(lhs), RHS::Atom(Atom::Var(clo))));
         }
-        self.add_stat(Stat::Assign(LHS::Tbl(lhs, Atom::String((&sels[sels.len() - 1]).to_owned())),
-                                   RHS::Atom(Atom::Var(clo))));
     }
 
     /// (tbl, fields, optional method name)
@@ -813,7 +816,7 @@ impl<'a> Parser<'a> {
             Tok::Ellipsis => { panic!("... is not yet supported ") }
             Tok::LBrace => { self.skip(); self.constructor() },
             Tok::Function => {
-                self.skip();
+                self.skip(); // skip function
                 let (fun_cfg, captures) = self.fundef(false); // is_method = false
                 let fun_var = self.fresh_var();
                 self.register_def(fun_var, fun_cfg);
