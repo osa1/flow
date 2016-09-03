@@ -1,5 +1,5 @@
 use ast::*;
-use cfg::{Atom, BasicBlock, CFGBuilder, LHS, RHS, Stat};
+use cfg::{Atom, BasicBlock, CFGBuilder, LHS, RHS, Stat, Var};
 use cfg;
 use lexer::Tok;
 use uniq::{UniqCounter, ENTRY_UNIQ};
@@ -18,19 +18,19 @@ pub struct Parser<'a> {
     pos: usize,
 
     /// Closure definitions.
-    defs: HashMap<cfg::Var, cfg::CFG>,
+    defs: HashMap<Var, cfg::CFG>,
 
     /// Current CFG. New statements and basic blocks are added here.
     cur_cfg: cfg::CFGBuilder,
 
     /// `Var` for `cur_cfg`. e.g. what definition we are parsing right now.
-    cur_var: cfg::Var,
+    cur_var: Var,
 
     /// Program-level global variables.
-    global_vars: HashMap<String, cfg::Var>,
+    global_vars: HashMap<String, Var>,
 
     /// Lexical scopes.
-    local_vars: Vec<HashMap<String, cfg::Var>>,
+    local_vars: Vec<HashMap<String, Var>>,
 
     /// Indices of closures scope in `local_vars` vector.
     /// TODO: Give some examples.
@@ -54,7 +54,7 @@ struct CloScope {
 
     /// Captured variables. These are variables used in the closure that are
     /// bound in scopes before `scope_idx` in `local_vars`.
-    captured: HashSet<cfg::Var>,
+    captured: HashSet<Var>,
 }
 
 impl CloScope {
@@ -95,7 +95,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    pub fn parse(mut self) -> HashMap<cfg::Var, cfg::CFG> {
+    pub fn parse(mut self) -> HashMap<Var, cfg::CFG> {
         self.block();
         let mut defs = self.defs;
         defs.insert(self.cur_var, self.cur_cfg.build());
@@ -130,7 +130,7 @@ impl<'a> Parser<'a> {
 
     /// Generate a new variable or return an existing variable, for variable
     /// declarations/assignments.
-    fn var_asgn(&mut self, s : &str, is_local : bool) -> cfg::Var {
+    fn var_asgn(&mut self, s : &str, is_local : bool) -> Var {
         if is_local {
             let v = self.fresh_var();
             let env_idx = self.local_vars.len() - 1;
@@ -163,7 +163,7 @@ impl<'a> Parser<'a> {
 
     /// Generate a new variable or return an existing variable, for uses of
     /// variables.
-    fn var_use(&mut self, s : &str) -> cfg::Var {
+    fn var_use(&mut self, s : &str) -> Var {
         // TODO: Searching through many environments may be too slow?
         // look for local variables first
         for local_env in self.local_vars.iter() {
@@ -190,7 +190,7 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(always)]
-    fn fresh_var(&mut self) -> cfg::Var {
+    fn fresh_var(&mut self) -> Var {
         self.var_gen.fresh()
     }
 
@@ -215,13 +215,13 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(always)]
-    fn exit_closure(&mut self) -> HashSet<cfg::Var> {
+    fn exit_closure(&mut self) -> HashSet<Var> {
         self.exit_scope();
         self.clo_scope.pop().unwrap().captured
     }
 
     #[inline(always)]
-    fn register_def(&mut self, var : cfg::Var, cfg : cfg::CFG) {
+    fn register_def(&mut self, var : Var, cfg : cfg::CFG) {
         self.defs.insert(var, cfg);
     }
 
@@ -489,7 +489,7 @@ impl<'a> Parser<'a> {
         self.set_bb(cont_bb);
     }
 
-    fn init_closure(&mut self, fun : cfg::Var, captures : HashSet<cfg::Var>) -> cfg::Var {
+    fn init_closure(&mut self, fun : Var, captures : HashSet<Var>) -> Var {
         // initialize the table (closure)
         let table_var = self.fresh_var();
         self.add_stat(Stat::Assign(LHS::Var(table_var), RHS::NewTbl));
@@ -533,7 +533,7 @@ impl<'a> Parser<'a> {
 
         // write the closure to its final location
         // TODO: move strings from 'self' to atoms somehow
-        let mut lhs : cfg::Var = self.var_use(&n);
+        let mut lhs : Var = self.var_use(&n);
         if sels.len() > 0 {
             for i in 0 .. sels.len() - 2 {
                 let new_lhs = self.fresh_var();
@@ -852,7 +852,7 @@ impl<'a> Parser<'a> {
     }
 
     /// true -> field with implicit key
-    fn field(&mut self, tbl : cfg::Var, pos : i64) -> bool {
+    fn field(&mut self, tbl : Var, pos : i64) -> bool {
         match &self.ts[self.pos] {
             &Tok::LBracket => {
                 self.skip(); // skip [
@@ -940,7 +940,7 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn atom_to_var(&mut self, atom : Atom) -> cfg::Var {
+    fn atom_to_var(&mut self, atom : Atom) -> Var {
         match atom {
             Atom::Var(var) => var,
             _ => {
@@ -1088,7 +1088,7 @@ impl<'a> Parser<'a> {
 
     /// Compile a function definition to CFG. Also returns captured variables.
     /// Syntax: ( <idlist> [, ...] ) <block> end
-    fn fundef(&mut self, is_method : bool) -> (cfg::CFG, HashSet<cfg::Var>) {
+    fn fundef(&mut self, is_method : bool) -> (cfg::CFG, HashSet<Var>) {
         self.expect_tok(Tok::LParen);
 
         self.enter_closure();
