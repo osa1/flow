@@ -953,7 +953,10 @@ impl<'a> Parser<'a> {
 
     /// Parse a single assignment LHS or function call.
     fn suffixedexp_stat(&mut self) -> Either<Atom, LHS> {
-        let mut last : Either<Atom, LHS> = Either::Left(self.exp0());
+        let mut last : Either<Atom, LHS> = match self.exp0() {
+            Atom::Var(var) => Either::Right(LHS::Var(var)),
+            atom => Either::Left(atom),
+        };
 
         loop {
             match unsafe { self.ts.get_unchecked(self.pos) } {
