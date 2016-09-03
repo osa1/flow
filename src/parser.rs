@@ -216,7 +216,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn exit_closure(&mut self) -> HashSet<cfg::Var> {
-        self.exit_closure();
+        self.exit_scope();
         self.clo_scope.pop().unwrap().captured
     }
 
