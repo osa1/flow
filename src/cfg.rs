@@ -58,7 +58,6 @@ pub struct CFGBuilder {
 pub enum Stat {
     Assign(LHS, RHS),
 
-    // TODO: Function should really be a variable
     FunCall(Atom, Vec<Atom>),
 
     /// (lhss, rhs)
