@@ -2,7 +2,6 @@ use bit_set::{BitSet};
 use bit_set;
 
 use std::collections::hash_map::Entry;
-use std::collections::hash_set;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::io::Write;
@@ -47,6 +46,8 @@ pub struct CFGBuilder {
     blocks: Vec<BasicBlock_>,
 
     /// Arguments of the function.
+    /// TODO: Remove this from the builder. Builder should just keep some basic
+    /// blocks.
     args: Vec<Var>,
 
     /// Current basic block. New statements are added here. Initially the entry
@@ -58,7 +59,7 @@ pub struct CFGBuilder {
 pub enum Stat {
     Assign(LHS, RHS),
 
-    FunCall(Atom, Vec<Atom>),
+    FunCall(Var, Vec<Var>),
 
     /// (lhss, rhs)
     MultiAssign(Vec<LHS>, RHS),
@@ -69,41 +70,49 @@ pub enum Stat {
 #[derive(Debug, Clone)]
 pub enum LHS {
     /// Table index
-    Tbl(Var, Atom),
+    Tbl(Var, Var),
+
     /// Variable
     Var(Var),
+
+    /// Write to a captured varible at given index of the closure env.
+    /// `Var` is for debugging purposes.
+    Captured(Var, usize),
 }
 
-#[derive(Debug, Clone)]
-pub enum Atom {
+impl LHS {
+    pub fn to_rhs(self) -> RHS {
+        match self {
+            LHS::Tbl(tbl, sel) => RHS::ReadTbl(tbl, sel),
+            LHS::Var(v) => RHS::Var(v),
+            LHS::Captured(var, idx) => RHS::Captured(var, idx),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum RHS {
     Nil,
     Var(Var),
     Bool(bool),
     Number(ast::Number),
     String(String),
-}
-
-#[derive(Debug)]
-pub enum RHS {
-    Atom(Atom),
-    // TODO: Function should really be a variable
-    FunCall(Atom, Vec<Atom>),
+    FunCall(Var, Vec<Var>),
     NewTbl,
-    // TODO: Table should really be a variable
-    ReadTbl(Atom, Atom),
-    Binop(Atom, ast::Binop, Atom),
-    Unop(ast::Unop, Atom),
+    ReadTbl(Var, Var),
+    Binop(Var, ast::Binop, Var),
+    Unop(ast::Unop, Var),
+
+    /// Value of a captured variable at given index of the closure env.
+    /// `Var` is for debugging purposes.
+    Captured(Var, usize),
 }
 
 #[derive(Debug)]
 pub enum Terminator {
-    /// Place holder during construction.
-    NotTerminated,
-
     Jmp(BasicBlock),
-    CondJmp(Atom, BasicBlock, BasicBlock),
-    Ret(Vec<Atom>),
-
+    CondJmp(Var, BasicBlock, BasicBlock),
+    Ret(Vec<Var>),
     // TODO: switch etc. for optimizations?
 }
 
@@ -140,10 +149,11 @@ impl CFGBuilder {
     }
 
     /// Finalize the builder and generate a CFG.
-    pub fn build(self) -> CFG {
+    pub fn build(self, captures : Vec<Var>) -> CFG {
         let mut cfg = CFG {
             blocks: self.blocks,
             args: self.args,
+            captures: captures,
         };
         cfg.build();
         cfg
@@ -159,6 +169,9 @@ pub struct CFG {
 
     /// Arguments of the function.
     args: Vec<Var>,
+
+    /// Captured variables.
+    captures: Vec<Var>,
 }
 
 #[derive(Debug)]
@@ -200,7 +213,7 @@ impl BasicBlock_ {
     pub fn new() -> BasicBlock_ {
         BasicBlock_ {
             stats: Vec::new(),
-            term: Terminator::NotTerminated,
+            term: Terminator::Ret(vec![]),
             preds: BitSet::new(),
             succs: BitSet::new(),
             dominators: BitSet::new(),
@@ -238,6 +251,7 @@ impl CFG {
         CFG {
             blocks: vec![entry_block],
             args: args,
+            captures: vec![],
         }
     }
 
@@ -248,7 +262,7 @@ impl CFG {
 
         self.blocks.push(BasicBlock_ {
             stats: Vec::new(),
-            term: Terminator::NotTerminated,
+            term: Terminator::Ret(vec![]),
             preds: BitSet::new(),
             succs: BitSet::new(),
             dominators: doms,
@@ -260,6 +274,10 @@ impl CFG {
         });
 
         BasicBlock(ret)
+    }
+
+    pub fn get_captures(&self) -> Vec<Var> {
+        self.captures.clone()
     }
 
     /// Make `node1` a predecessor of `node2`. Also makes `node2` a successor of
@@ -559,6 +577,16 @@ impl CFG {
         }
         write!(buf, "\n").unwrap();
 
+        // TODO: generalize comma-separated printing
+        write!(buf, "captures: ").unwrap();
+        let mut first = true;
+        for arg in self.captures.iter() {
+            if !first { write!(buf, ", ").unwrap(); }
+            first = false;
+            write!(buf, "{:?}", arg).unwrap();
+        }
+        write!(buf, "\n").unwrap();
+
         for (block_idx, block) in self.blocks.iter().enumerate() {
             write!(buf, "basic block {}:\n", block_idx).unwrap();
             block.print(buf);
@@ -588,15 +616,12 @@ impl BasicBlock {
 impl Terminator {
     pub fn print(&self, buf : &mut Vec<u8>) {
         match self {
-            &Terminator::NotTerminated => { write!(buf, "(not terminated)").unwrap(); },
             &Terminator::Jmp(bb) => {
                 write!(buf, "jump ").unwrap();
                 bb.print(buf);
             },
-            &Terminator::CondJmp(ref cond, then_bb, else_bb) => {
-                write!(buf, "if ").unwrap();
-                cond.print(buf);
-                write!(buf, " then ").unwrap();
+            &Terminator::CondJmp(cond, then_bb, else_bb) => {
+                write!(buf, "if {:?} then ", cond).unwrap();
                 then_bb.print(buf);
                 write!(buf, " else ").unwrap();
                 else_bb.print(buf);
@@ -607,7 +632,7 @@ impl Terminator {
                 for ret in rets {
                     if !first { write!(buf, ", ").unwrap(); }
                     first = false;
-                    ret.print(buf);
+                    write!(buf, "{:?}", ret).unwrap();
                 }
             }
         }
@@ -622,14 +647,13 @@ impl Stat {
                 write!(buf, " = ").unwrap();
                 rhs.print(buf);
             },
-            &Stat::FunCall(ref fun, ref args) => {
-                fun.print(buf);
-                write!(buf, "(").unwrap();
+            &Stat::FunCall(fun, ref args) => {
+                write!(buf, "{:?}(", fun).unwrap();
                 let mut first = true;
                 for arg in args {
                     if !first { write!(buf, ", ").unwrap(); }
                     first = false;
-                    arg.print(buf);
+                    write!(buf, "{:?}", arg).unwrap();
                 }
                 write!(buf, ")").unwrap();
             },
@@ -651,12 +675,13 @@ impl LHS {
     pub fn print(&self, buf : &mut Vec<u8>) {
         match self {
             &LHS::Tbl(var, ref sel) => {
-                write!(buf, "{:?}[", var).unwrap();
-                sel.print(buf);
-                write!(buf, "]").unwrap();
+                write!(buf, "{:?}[{:?}]", var, sel).unwrap();
             },
             &LHS::Var(var) => {
                 write!(buf, "{:?}", var).unwrap();
+            },
+            &LHS::Captured(var, _) => {
+                write!(buf, "env[{:?}]", var).unwrap();
             }
         }
     }
@@ -665,39 +690,40 @@ impl LHS {
 impl RHS {
     pub fn print(&self, buf : &mut Vec<u8>) {
         match self {
-            &RHS::Atom(ref atom) => atom.print(buf),
-            &RHS::FunCall(ref fun, ref args) => {
-                fun.print(buf);
-                write!(buf, "(").unwrap();
+            &RHS::Nil => { write!(buf, "nil").unwrap(); },
+            &RHS::Var(var) => { write!(buf, "{:?}", var).unwrap(); },
+            &RHS::Bool(b) => { write!(buf, "{}", if b { "true" } else { "false" }).unwrap(); },
+            &RHS::Number(ref n) => { n.print(buf); },
+            &RHS::String(ref s) => { write!(buf, "\"{}\"", s).unwrap(); },
+            &RHS::FunCall(fun, ref args) => {
+                write!(buf, "{:?}(", fun).unwrap();
                 let mut first = true;
                 for arg in args {
                     if !first { write!(buf, ", ").unwrap(); }
                     first = false;
-                    arg.print(buf);
+                    write!(buf, "{:?}", arg).unwrap();
                 }
                 write!(buf, ")").unwrap();
             },
             &RHS::NewTbl => {
                 write!(buf, "{{}}").unwrap();
             },
-            &RHS::ReadTbl(ref tbl, ref sel) => {
-                tbl.print(buf);
-                write!(buf, "[").unwrap();
-                sel.print(buf);
-                write!(buf, "]");
+            &RHS::ReadTbl(tbl, sel) => {
+                write!(buf, "{:?}[{:?}]", tbl, sel).unwrap();
 
             },
-            &RHS::Binop(ref a1, op, ref a2) => {
-                a1.print(buf);
-                write!(buf, " ").unwrap();
+            &RHS::Binop(a1, op, a2) => {
+                write!(buf, "{:?} ", a1).unwrap();
                 op.print(buf);
-                write!(buf, " ").unwrap();
-                a2.print(buf);
+                write!(buf, " {:?}", a2).unwrap();
             },
-            &RHS::Unop(op, ref a) => {
+            &RHS::Unop(op, a) => {
                 op.print(buf);
-                a.print(buf);
+                write!(buf, "{:?}", a).unwrap();
             },
+            &RHS::Captured(var, _) => {
+                write!(buf, "env[{:?}]", var).unwrap();
+            }
         }
     }
 }
@@ -740,18 +766,6 @@ impl ast::Binop {
             ast::Binop::BXor => "~",
         };
         write!(buf, "{}", str).unwrap();
-    }
-}
-
-impl Atom {
-    pub fn print(&self, buf : &mut Vec<u8>) {
-        match self {
-            &Atom::Nil => { write!(buf, "nil").unwrap(); },
-            &Atom::Var(var) => { write!(buf, "{:?}", var).unwrap(); },
-            &Atom::Bool(b) => { write!(buf, "{}", if b { "true" } else { "false" }).unwrap(); },
-            &Atom::Number(ref n) => { n.print(buf); },
-            &Atom::String(ref s) => { write!(buf, "\"{}\"", s).unwrap(); },
-        }
     }
 }
 

@@ -1,12 +1,11 @@
 use ast::*;
-use cfg::{Atom, BasicBlock, CFGBuilder, LHS, RHS, Stat, Var};
+use cfg::{BasicBlock, CFGBuilder, LHS, RHS, Stat, Var};
 use cfg;
 use lexer::Tok;
 use uniq::{UniqCounter, ENTRY_UNIQ};
 use utils::Either;
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std;
 
 pub struct Parser<'a> {
@@ -23,6 +22,11 @@ pub struct Parser<'a> {
     /// Current CFG. New statements and basic blocks are added here.
     cur_cfg: cfg::CFGBuilder,
 
+    /// Variables captured by the closure currently being compiled. Not useful
+    /// when not compiling a closure. Values are indices of variables in closure
+    /// environment.
+    captures: HashMap<Var, usize>,
+
     /// `Var` for `cur_cfg`. e.g. what definition we are parsing right now.
     cur_var: Var,
 
@@ -33,7 +37,6 @@ pub struct Parser<'a> {
     local_vars: Vec<HashMap<String, Var>>,
 
     /// Indices of closures scope in `local_vars` vector.
-    /// TODO: Give some examples.
     clo_scope: Vec<CloScope>,
 
     /// Where to jump on `break`. Push continuation when entering a loop. Pop it
@@ -48,22 +51,13 @@ pub struct Parser<'a> {
     var_gen: UniqCounter,
 }
 
-struct CloScope {
-    /// This is the index of where the closure scope starts in `local_vars`.
-    scope_idx: usize,
+/// This is the index of where the closure scope starts in `local_vars`.
+type CloScope = usize;
 
-    /// Captured variables. These are variables used in the closure that are
-    /// bound in scopes before `scope_idx` in `local_vars`.
-    captured: HashSet<Var>,
-}
-
-impl CloScope {
-    fn new(scope_idx : usize) -> CloScope {
-        CloScope {
-            scope_idx: scope_idx,
-            captured: HashSet::new(),
-        }
-    }
+enum VarOcc {
+    CapturedVar(Var),
+    Var(Var),
+    NotLocal,
 }
 
 /// Can the given token follow a statement? Useful when terminating statement
@@ -86,6 +80,7 @@ impl<'a> Parser<'a> {
             defs: HashMap::new(),
             cur_var: ENTRY_UNIQ, // special
             cur_cfg: cfg::CFGBuilder::new(vec![]),
+            captures: HashMap::new(),
             global_vars: HashMap::new(),
             local_vars: vec![],
             clo_scope: vec![],
@@ -98,7 +93,8 @@ impl<'a> Parser<'a> {
     pub fn parse(mut self) -> HashMap<Var, cfg::CFG> {
         self.block();
         let mut defs = self.defs;
-        defs.insert(self.cur_var, self.cur_cfg.build());
+        let captures = vec![]; // no captures at the top level
+        defs.insert(self.cur_var, self.cur_cfg.build(captures));
         defs
     }
 
@@ -128,58 +124,99 @@ impl<'a> Parser<'a> {
         self.pos += 1;
     }
 
-    /// Generate a new variable or return an existing variable, for variable
-    /// declarations/assignments.
-    fn var_asgn(&mut self, s : &str, is_local : bool) -> Var {
-        if is_local {
-            let v = self.fresh_var();
-            let env_idx = self.local_vars.len() - 1;
-            (&mut self.local_vars[env_idx]).insert(s.to_owned(), v);
-            v
-        } else {
-            // It could be a locally-bound variable. Search local envs first.
-            for local_env in self.local_vars.iter() {
-                match local_env.get(s) {
-                    Some(v) => { return *v; },
-                    None => {}
-                }
-            }
-            // Global variable
-            // TODO: Duplicated from 'var_use'
-            let v1 = match self.global_vars.get(s) {
-                None => None,
-                Some(v) => Some(*v),
-            };
-            match v1 {
-                None => {
-                    let v = self.fresh_var();
-                    self.global_vars.insert(s.to_owned(), v);
-                    v
-                },
-                Some(v) => v
-            }
-        }
+    /// Declare a local variable.
+    fn var_decl(&mut self, s : &str) -> Var {
+        let v = self.fresh_var();
+        let env_idx = self.local_vars.len() - 1;
+        self.local_vars[env_idx].insert(s.to_owned(), v);
+        v
     }
 
-    /// Generate a new variable or return an existing variable, for uses of
-    /// variables.
-    fn var_use(&mut self, s : &str) -> Var {
-        // TODO: Searching through many environments may be too slow?
+    fn var_local_occ(&mut self, s : &str) -> VarOcc {
+        let n_scopes = self.local_vars.len();
         // look for local variables first
-        for local_env in self.local_vars.iter() {
-            match local_env.get(s) {
-                Some(v) => { return *v; },
-                None => {},
+
+        for (env_depth, local_env) in self.local_vars.iter().rev().enumerate() {
+            let current_scope_depth = n_scopes - env_depth - 1;
+            match local_env.get(s).cloned() {
+                Some(v) => {
+                    // Is this a captured variable? Closure currently being
+                    // compiled is at `self.clo_scope.last()`. If the number in
+                    // `CloScope` is smaller than the scope index we found the
+                    // variable at, then it's captured.
+                    match self.clo_scope.last().cloned() {
+                        Some(clo_scope_idx) if current_scope_depth >= clo_scope_idx => {
+                            // captured variable
+                            return VarOcc::CapturedVar(v);
+                        },
+                        _ => {
+                            // not captured
+                            return VarOcc::Var(v);
+                        }
+                    }
+                },
+                None => {}, // keep searching
+            }
+        }
+
+        VarOcc::NotLocal
+    }
+
+    /// Generate a LHS of a variable (in the source program). Handles captured
+    /// variables in closures.
+    fn var_lhs_use(&mut self, s : &str) -> LHS {
+        unimplemented!()
+    }
+
+    fn lhs_to_var(&mut self, lhs : LHS) -> Var {
+        unimplemented!()
+    }
+
+    /// Generate an use of a variable (in the source program). Handles captured
+    /// variables in closures.
+    fn var_rhs_use(&mut self, s : &str) -> Var {
+        /*
+        let n_scopes = self.local_vars.len();
+        // look for local variables first
+        for (env_depth, local_env) in self.local_vars.iter().rev().enumerate() {
+            let current_scope_depth = n_scopes - env_depth - 1;
+            match local_env.get(s).cloned() {
+                Some(v) => {
+
+                    // Is this a captured variable? Closure currently being
+                    // compiled is at `self.clo_scope.last()`. If the number in
+                    // `CloScope` is smaller than the scope index we found the
+                    // variable at, then it's captured.
+                    //
+                    // If a captured variable is mutated and the closure escapes
+                    // the scope, we need to box the variable (i.e. allocate on
+                    // the heap). We do this in a later pass. (TODO)
+
+                    match self.clo_scope.last().cloned() {
+                        Some(clo_scope_idx) if current_scope_depth >= clo_scope_idx => {
+                            // captured variable, mark it as such
+                            let captured_var_idx = self.captures.len();
+                            self.captures.insert(v, captured_var_idx);
+                            // reference to the variable will be in closure
+                            // environment. get the value from it.
+                            let deref_var = self.var_gen.fresh(); // self.fresh_var();
+                            // self.add_stat()
+                            self.cur_cfg.add_stat(Stat::Assign(LHS::Var(deref_var),
+                                                               RHS::Captured(v, captured_var_idx)));
+                            return deref_var;
+                        },
+                        _ => {
+                            // variable is not captured
+                            return v;
+                        }
+                    }
+                },
+                None => {}, // keep searching
             }
         }
 
         // it has to be a global variable
-        // Stupid borrow checker issues again.
-        let v1 = match self.global_vars.get(s) {
-            None => None,
-            Some(v) => Some(*v),
-        };
-        match v1 {
+        match self.global_vars.get(s).cloned() {
             None => {
                 let v = self.fresh_var();
                 self.global_vars.insert(s.to_owned(), v);
@@ -187,6 +224,8 @@ impl<'a> Parser<'a> {
             },
             Some(v) => v
         }
+        */
+        unimplemented!()
     }
 
     #[inline(always)]
@@ -203,7 +242,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn enter_closure(&mut self) {
-        self.clo_scope.push(CloScope::new(self.local_vars.len() - 1));
+        self.clo_scope.push(self.local_vars.len() - 1);
         self.enter_scope();
     }
 
@@ -215,9 +254,14 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(always)]
-    fn exit_closure(&mut self) -> HashSet<Var> {
+    fn exit_closure(&mut self) -> Vec<Var> {
         self.exit_scope();
-        self.clo_scope.pop().unwrap().captured
+        self.clo_scope.pop().unwrap();
+        let ret = std::mem::replace(&mut self.captures, HashMap::new());
+        // sort ret by values
+        let mut ret_vec : Vec<(Var, usize)> = ret.into_iter().collect();
+        ret_vec.sort_by_key(|&(v, k)| { k });
+        ret_vec.into_iter().map(|(v, _)| v).collect()
     }
 
     #[inline(always)]
@@ -236,12 +280,12 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(always)]
-    fn cond_terminate(&mut self, cond : Atom, then_bb : cfg::BasicBlock, else_bb : cfg::BasicBlock) {
+    fn cond_terminate(&mut self, cond : Var, then_bb : cfg::BasicBlock, else_bb : cfg::BasicBlock) {
         self.cur_cfg.terminate(cfg::Terminator::CondJmp(cond, then_bb, else_bb));
     }
 
     #[inline(always)]
-    fn ret(&mut self, exps : Vec<Atom>) {
+    fn ret(&mut self, exps : Vec<Var>) {
         self.cur_cfg.terminate(cfg::Terminator::Ret(exps));
     }
 
@@ -253,6 +297,30 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn set_bb(&mut self, bb : cfg::BasicBlock) {
         self.cur_cfg.set_bb(bb)
+    }
+
+    fn emit_string(&mut self, s : String) -> Var {
+        let ret = self.fresh_var();
+        self.add_stat(Stat::Assign(LHS::Var(ret), RHS::String(s)));
+        ret
+    }
+
+    fn emit_number(&mut self, num : Number) -> Var {
+        let ret = self.fresh_var();
+        self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Number(num)));
+        ret
+    }
+
+    fn emit_nil(&mut self) -> Var {
+        let ret = self.fresh_var();
+        self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Nil));
+        ret
+    }
+
+    fn emit_bool(&mut self, b : bool) -> Var {
+        let ret = self.fresh_var();
+        self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Bool(b)));
+        ret
     }
 }
 
@@ -429,7 +497,7 @@ impl<'a> Parser<'a> {
         self.set_bb(cond_bb);
         let cond_var = self.fresh_var();
         self.add_stat(Stat::Assign(LHS::Var(cond_var), RHS::Binop(start, Binop::LT, end)));
-        self.cond_terminate(Atom::Var(cond_var), body_bb, cont_bb);
+        self.cond_terminate(cond_var, body_bb, cont_bb);
 
         // body
         self.set_bb(body_bb);
@@ -489,19 +557,22 @@ impl<'a> Parser<'a> {
         self.set_bb(cont_bb);
     }
 
-    fn init_closure(&mut self, fun : Var, captures : HashSet<Var>) -> Var {
+    fn init_closure(&mut self, fun : Var, captures : Vec<Var>) -> Var {
         // initialize the table (closure)
         let table_var = self.fresh_var();
         self.add_stat(Stat::Assign(LHS::Var(table_var), RHS::NewTbl));
 
         // write the function to the table
-        self.add_stat(Stat::Assign(LHS::Tbl(table_var, Atom::Number(Number::Int(0))),
-                                   RHS::Atom(Atom::Var(fun))));
+        let fun_idx_var = self.fresh_var();
+        self.add_stat(Stat::Assign(LHS::Var(fun_idx_var), RHS::Number(Number::Int(0))));
+        self.add_stat(Stat::Assign(LHS::Tbl(table_var, fun_idx_var), RHS::Var(fun)));
 
         // write captured values to the table
         for (capture_idx, captured) in captures.into_iter().enumerate() {
-            self.add_stat(Stat::Assign(LHS::Tbl(table_var, Atom::Number(Number::Int((capture_idx + 1) as i64))),
-                                       RHS::Atom(Atom::Var(captured))));
+            let capture_idx_var = self.fresh_var();
+            self.add_stat(Stat::Assign(LHS::Var(capture_idx_var),
+                                       RHS::Number(Number::Int((capture_idx + 1) as i64))));
+            self.add_stat(Stat::Assign(LHS::Tbl(table_var, capture_idx_var), RHS::Var(captured)));
         }
 
         table_var
@@ -512,7 +583,7 @@ impl<'a> Parser<'a> {
 
         let (fun_var, captures) = {
             // parse function body. register the CFG as a new definition.
-            let (fun_cfg, captures) = {
+            let fun_cfg = {
                 match mname {
                     Some(mname) => {
                         sels.push(mname);
@@ -525,28 +596,25 @@ impl<'a> Parser<'a> {
             };
 
             let fun_var = self.fresh_var();
+            let fun_captures = fun_cfg.get_captures();
             self.register_def(fun_var, fun_cfg);
-            (fun_var, captures)
+            (fun_var, fun_captures)
         };
 
         let clo = self.init_closure(fun_var, captures);
 
         // write the closure to its final location
         // TODO: move strings from 'self' to atoms somehow
-        let mut lhs : Var = self.var_use(&n);
-        if sels.len() > 0 {
-            for i in 0 .. sels.len() - 2 {
-                let new_lhs = self.fresh_var();
-                let sel = Atom::String((&sels[i]).to_owned());
-                self.add_stat(Stat::Assign(LHS::Var(new_lhs), RHS::ReadTbl(Atom::Var(lhs), sel)));
-                lhs = new_lhs;
-            }
-
-            self.add_stat(Stat::Assign(LHS::Tbl(lhs, Atom::String((&sels[sels.len() - 1]).to_owned())),
-                                       RHS::Atom(Atom::Var(clo))));
-        } else {
-            self.add_stat(Stat::Assign(LHS::Var(lhs), RHS::Atom(Atom::Var(clo))));
+        let mut lhs : LHS = self.var_lhs_use(&n);
+        for sel in sels {
+            lhs = {
+                let sel_var = self.emit_string(sel);
+                let lhs_var = self.lhs_to_var(lhs);
+                LHS::Tbl(lhs_var, sel_var)
+            };
         }
+
+        self.add_stat(Stat::Assign(lhs, RHS::Var(clo)));
     }
 
     /// (tbl, fields, optional method name)
@@ -571,13 +639,14 @@ impl<'a> Parser<'a> {
     // <name> <fundef>
     fn localfuncstat(&mut self) {
         let fname = self.name();
-        let (fun_cfg, captures) = self.fundef(false); // is_method = false
+        let fun_cfg = self.fundef(false); // is_method = false
         let fun_var = self.fresh_var();
+        let fun_captures = fun_cfg.get_captures();
         self.register_def(fun_var, fun_cfg);
 
-        let clo = self.init_closure(fun_var, captures);
-        let lhs = LHS::Var(self.var_use(&fname));
-        self.add_stat(Stat::Assign(lhs, RHS::Atom(Atom::Var(clo))));
+        let clo = self.init_closure(fun_var, fun_captures);
+        let lhs = self.var_lhs_use(&fname);
+        self.add_stat(Stat::Assign(lhs, RHS::Var(clo)));
     }
 
     // <namelist> [= <explist>]
@@ -586,14 +655,14 @@ impl<'a> Parser<'a> {
         // there should be at least one name
         {
             let name = self.name();
-            let var = self.var_asgn(&name, true);
+            let var = self.var_decl(&name);
             lhss.push(LHS::Var(var));
         }
 
         while self.cur_tok_() == &Tok::Comma {
             self.skip(); // consume ,
             let name = self.name();
-            let var = self.var_asgn(&name, true);
+            let var = self.var_decl(&name);
             lhss.push(LHS::Var(var));
         }
 
@@ -615,18 +684,18 @@ impl<'a> Parser<'a> {
         if n_lhss == n_rhss {
             for i in 0 .. n_lhss {
                 // TODO: we should be able to remove clone() calls here
-                self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Atom(rhss[i].clone())));
+                self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i].clone())));
             }
         } else if n_lhss > n_rhss {
             for i in 0 .. n_lhss - 1 {
-                self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Atom(rhss[i].clone())));
+                self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i].clone())));
             }
             // last one is a multi assign
             for _ in lhss.drain(0 .. n_rhss - 1) {}
-            self.add_stat(Stat::MultiAssign(lhss, RHS::Atom(rhss[rhss.len() - 1].clone())));
+            self.add_stat(Stat::MultiAssign(lhss, RHS::Var(rhss[rhss.len() - 1].clone())));
         } else { // n_rhss > n_lhss
             for i in 0 .. n_rhss {
-                self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Atom(rhss[i].clone())));
+                self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i].clone())));
                 // TODO: ignore the rest?
             }
         }
@@ -682,14 +751,14 @@ impl<'a> Parser<'a> {
     // function call or assignment. Both start with a <suffixedexp>.
     fn exprstat(&mut self) {
         match self.suffixedexp_stat() {
-            Either::Right(lhs) => {
+            Either::Left(lhs) => {
                 // assignment
                 let mut lhss = vec![lhs];
                 while self.cur_tok_() == &Tok::Comma {
                     self.skip(); // skip ,
                     match self.suffixedexp_stat() {
-                        Either::Right(lhs) => lhss.push(lhs),
-                        Either::Left(_) => panic!("exprstat"),
+                        Either::Left(lhs) => lhss.push(lhs),
+                        Either::Right(_) => panic!("exprstat"),
                     }
                 }
                 // not a "local" assignment, so a '= <exp>' has to follow
@@ -706,23 +775,23 @@ impl<'a> Parser<'a> {
                 if n_lhss == n_rhss {
                     for i in 0 .. n_lhss {
                         // TODO: we should be able to remove clone() calls here
-                        self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Atom(rhss[i].clone())));
+                        self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i])));
                     }
                 } else if n_lhss > n_rhss {
                     for i in 0 .. n_lhss - 1 {
-                        self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Atom(rhss[i].clone())));
+                        self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i])));
                     }
                     // last one is a multi assign
                     for _ in lhss.drain(0 .. n_rhss - 1) {}
-                    self.add_stat(Stat::MultiAssign(lhss, RHS::Atom(rhss[rhss.len() - 1].clone())));
+                    self.add_stat(Stat::MultiAssign(lhss, RHS::Var(rhss[rhss.len() - 1])));
                 } else { // n_rhss > n_lhss
                     for i in 0 .. n_rhss {
-                        self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Atom(rhss[i].clone())));
+                        self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i])));
                         // TODO: ignore the rest?
                     }
                 }
             },
-            Either::Left(atom) => {
+            Either::Right(_) => {
                 // function call, nothing to do
             },
         }
@@ -772,11 +841,11 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn exp(&mut self) -> Atom {
+    fn exp(&mut self) -> Var {
         self.exp_(0)
     }
 
-    fn exp_(&mut self, current_prec : Prec) -> Atom {
+    fn exp_(&mut self, current_prec : Prec) -> Var {
         let mut e1 = match self.unop() {
             None =>
                 self.simpleexp(),
@@ -785,7 +854,7 @@ impl<'a> Parser<'a> {
                 let e = self.exp_(UNOP_PREC);
                 let ret = self.fresh_var();
                 self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Unop(unop, e)));
-                Atom::Var(ret)
+                ret
             },
         };
 
@@ -800,27 +869,28 @@ impl<'a> Parser<'a> {
             let e2 = self.exp_(op_prec.right);
             let ret = self.fresh_var();
             self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Binop(e1, op, e2)));
-            e1 = Atom::Var(ret);
+            e1 = ret;
         }
 
         e1
     }
 
-    fn simpleexp(&mut self) -> cfg::Atom {
+    fn simpleexp(&mut self) -> Var {
         match self.cur_tok() {
-            Tok::Num(n) => { self.skip(); Atom::Number(n) },
-            Tok::SLit(s) => { self.skip(); Atom::String(s) },
-            Tok::Nil => { self.skip(); Atom::Nil },
-            Tok::True => { self.skip(); Atom::Bool(true) }
-            Tok::False => { self.skip(); Atom::Bool(false) }
+            Tok::Num(n) => { self.skip(); self.emit_number(n) },
+            Tok::SLit(s) => { self.skip(); self.emit_string(s) },
+            Tok::Nil => { self.skip(); self.emit_nil() },
+            Tok::True => { self.skip(); self.emit_bool(true) }
+            Tok::False => { self.skip(); self.emit_bool(false) }
             Tok::Ellipsis => { panic!("... is not yet supported ") }
             Tok::LBrace => { self.skip(); self.constructor() },
             Tok::Function => {
                 self.skip(); // skip function
-                let (fun_cfg, captures) = self.fundef(false); // is_method = false
+                let fun_cfg = self.fundef(false); // is_method = false
                 let fun_var = self.fresh_var();
+                let fun_captures = fun_cfg.get_captures();
                 self.register_def(fun_var, fun_cfg);
-                Atom::Var(self.init_closure(fun_var, captures))
+                self.init_closure(fun_var, fun_captures)
             },
             _ =>
                 self.suffixedexp_exp(),
@@ -828,7 +898,7 @@ impl<'a> Parser<'a> {
     }
 
     // [fieldlist] '}'
-    fn constructor(&mut self) -> Atom {
+    fn constructor(&mut self) -> Var {
         let ret = self.fresh_var();
         self.add_stat(Stat::Assign(LHS::Var(ret), RHS::NewTbl));
 
@@ -848,7 +918,7 @@ impl<'a> Parser<'a> {
         }
 
         self.expect_tok(Tok::RBrace);
-        Atom::Var(ret)
+        ret
     }
 
     /// true -> field with implicit key
@@ -860,19 +930,21 @@ impl<'a> Parser<'a> {
                 self.expect_tok(Tok::RBracket);
                 self.expect_tok(Tok::Assign);
                 let e2 = self.exp();
-                self.add_stat(Stat::Assign(LHS::Tbl(tbl, e1), RHS::Atom(e2)));
+                self.add_stat(Stat::Assign(LHS::Tbl(tbl, e1), RHS::Var(e2)));
                 false
             },
             &Tok::Ident(ref n) if &self.ts[self.pos + 1] == &Tok::Assign => {
                 self.skip(); // skip identifier
                 self.skip(); // skip =
                 let e2 = self.exp();
-                self.add_stat(Stat::Assign(LHS::Tbl(tbl, Atom::String(n.to_owned())), RHS::Atom(e2)));
+                let sel = self.emit_string(n.to_owned());
+                self.add_stat(Stat::Assign(LHS::Tbl(tbl, sel), RHS::Var(e2)));
                 false
             },
             _ => {
                 let e = self.exp();
-                self.add_stat(Stat::Assign(LHS::Tbl(tbl, Atom::Number(Number::Int(pos))), RHS::Atom(e)));
+                let sel = self.emit_number(Number::Int(pos));
+                self.add_stat(Stat::Assign(LHS::Tbl(tbl, sel), RHS::Var(e)));
                 true
             }
         }
@@ -889,8 +961,11 @@ impl<'a> Parser<'a> {
     // - Statement variant emits a function call statement or an assignment.
 
     // <funcall> or <var>
-    fn suffixedexp_exp(&mut self) -> Atom {
-        let mut e0 = self.exp0();
+    fn suffixedexp_exp(&mut self) -> Var {
+        let mut e0 = {
+            let lhs_or_rhs = self.exp0();
+            self.lhs_rhs_to_var(lhs_or_rhs)
+        };
 
         loop {
             match unsafe { self.ts.get_unchecked(self.pos) } {
@@ -903,8 +978,9 @@ impl<'a> Parser<'a> {
                     self.skip(); // consume .
                     let name = self.name();
                     let e1 = self.fresh_var();
-                    self.add_stat(Stat::Assign(LHS::Var(e1), RHS::ReadTbl(e0, Atom::String(name))));
-                    e0 = Atom::Var(e1);
+                    let sel = self.emit_string(name);
+                    self.add_stat(Stat::Assign(LHS::Var(e1), RHS::ReadTbl(e0, sel)));
+                    e0 = e1;
                 },
                 &Tok::LBracket => {
                     // field selection
@@ -913,7 +989,7 @@ impl<'a> Parser<'a> {
                     self.expect_tok(Tok::RBracket);
                     let e1 = self.fresh_var();
                     self.add_stat(Stat::Assign(LHS::Var(e1), RHS::ReadTbl(e0, field)));
-                    e0 = Atom::Var(e1);
+                    e0 = e1;
                 },
                 _ => { break; }
             }
@@ -922,12 +998,18 @@ impl<'a> Parser<'a> {
         e0
     }
 
+    /*
     fn lhs_to_atom(&mut self, lhs : LHS) -> Atom {
         match lhs {
             LHS::Var(var) => Atom::Var(var),
             LHS::Tbl(var, sel) => {
                 let ret = self.fresh_var();
                 self.add_stat(Stat::Assign(LHS::Var(ret), RHS::ReadTbl(Atom::Var(var), sel)));
+                Atom::Var(ret)
+            },
+            LHS::Captured(var, idx) => {
+                let ret = self.fresh_var();
+                self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Captured(var, idx)));
                 Atom::Var(ret)
             },
         }
@@ -950,39 +1032,42 @@ impl<'a> Parser<'a> {
             }
         }
     }
+    */
+
+    fn lhs_rhs_to_var(&mut self, lhs_rhs : Either<LHS, RHS>) -> Var {
+        unimplemented!()
+    }
 
     /// Parse a single assignment LHS or function call.
-    fn suffixedexp_stat(&mut self) -> Either<Atom, LHS> {
-        let mut last : Either<Atom, LHS> = match self.exp0() {
-            Atom::Var(var) => Either::Right(LHS::Var(var)),
-            atom => Either::Left(atom),
-        };
+    fn suffixedexp_stat(&mut self) -> Either<LHS, RHS> {
+        let mut last : Either<LHS, RHS> = self.exp0();
 
         loop {
             match unsafe { self.ts.get_unchecked(self.pos) } {
                 &Tok::LParen | &Tok::SLit(_) | &Tok::LBrace | &Tok::Colon => {
                     last = {
-                        let atom = self.atom_lhs_to_atom(last);
-                        Either::Left(self.funcall(atom))
+                        let atom = self.lhs_rhs_to_var(last);
+                        Either::Right(RHS::Var(self.funcall(atom)))
                     };
                 },
                 &Tok::Dot => {
                     last = {
                         // field selection
-                        let atom = self.atom_lhs_to_atom(last);
+                        let tbl = self.lhs_rhs_to_var(last);
                         self.skip(); // consume .
                         let name = self.name();
-                        Either::Right(LHS::Tbl(self.atom_to_var(atom), Atom::String(name)))
+                        let sel = self.emit_string(name);
+                        Either::Left(LHS::Tbl(tbl, sel))
                     };
                 },
                 &Tok::LBracket => {
                     // field selection
                     last = {
                         self.skip(); // consume [
-                        let atom = self.atom_lhs_to_atom(last);
-                        let field = self.exp();
+                        let tbl = self.lhs_rhs_to_var(last);
+                        let sel = self.exp();
                         self.expect_tok(Tok::RBracket);
-                        Either::Right(LHS::Tbl(self.atom_to_var(atom), field))
+                        Either::Left(LHS::Tbl(tbl, sel))
                     };
                 },
                 _ => { break; },
@@ -992,18 +1077,18 @@ impl<'a> Parser<'a> {
         last
     }
 
-    // name | '(' exp ')'
-    fn exp0(&mut self) -> Atom {
+    /// name | '(' exp ')'
+    fn exp0(&mut self) -> Either<LHS, RHS> {
         match &self.ts[self.pos] {
             &Tok::Ident(ref s) => {
                 self.skip(); // skip ident
-                Atom::Var(self.var_use(s))
+                Either::Left(self.var_lhs_use(s))
             },
             &Tok::LParen => {
                 self.skip(); // skip (
                 let exp = self.exp();
                 self.expect_tok(Tok::RParen);
-                exp
+                Either::Right(RHS::Var(exp))
             },
             tok =>
                 panic!("exp0: Unexpected token: {:?}", tok),
@@ -1012,7 +1097,7 @@ impl<'a> Parser<'a> {
 
     // function or method call.
     // <funargs> | : <name> <funargs>
-    fn funcall(&mut self, f : Atom) -> Atom {
+    fn funcall(&mut self, f : Var) -> Var {
         match self.cur_tok_() {
             &Tok::Colon => {
                 self.skip(); // skip :
@@ -1022,10 +1107,11 @@ impl<'a> Parser<'a> {
                 let fun_var = self.fresh_var();
                 // binder for the result
                 let ret_var = self.fresh_var();
-                self.add_stat(Stat::Assign(LHS::Var(fun_var), RHS::ReadTbl(f, Atom::String(mname))));
-                args.insert(0, Atom::Var(fun_var));
-                self.add_stat(Stat::Assign(LHS::Var(ret_var), RHS::FunCall(Atom::Var(fun_var), args)));
-                Atom::Var(ret_var)
+                let meth_sel = self.emit_string(mname);
+                self.add_stat(Stat::Assign(LHS::Var(fun_var), RHS::ReadTbl(f, meth_sel)));
+                args.insert(0, fun_var);
+                self.add_stat(Stat::Assign(LHS::Var(ret_var), RHS::FunCall(fun_var, args)));
+                ret_var
             },
             _ => {
                 let mut args = self.funargs();
@@ -1033,12 +1119,12 @@ impl<'a> Parser<'a> {
                 // binder for the result
                 let ret_var = self.fresh_var();
                 self.add_stat(Stat::Assign(LHS::Var(ret_var), RHS::FunCall(f, args)));
-                Atom::Var(ret_var)
+                ret_var
             },
         }
     }
 
-    fn funargs(&mut self) -> Vec<Atom> {
+    fn funargs(&mut self) -> Vec<Var> {
         let mut args = vec![];
 
         match self.cur_tok() {
@@ -1063,7 +1149,7 @@ impl<'a> Parser<'a> {
             Tok::SLit(str) => {
                 // single string argument
                 self.skip(); // skip string
-                args.push(Atom::String(str));
+                args.push(self.emit_string(str));
             },
             _ => panic!("funargs"),
         }
@@ -1088,32 +1174,29 @@ impl<'a> Parser<'a> {
 
     /// Compile a function definition to CFG. Also returns captured variables.
     /// Syntax: ( <idlist> [, ...] ) <block> end
-    fn fundef(&mut self, is_method : bool) -> (cfg::CFG, HashSet<Var>) {
+    fn fundef(&mut self, is_method : bool) -> cfg::CFG {
         self.expect_tok(Tok::LParen);
 
         self.enter_closure();
 
         // collect args
         let mut args = vec![];
-        let mut vararg = false;
         if self.cur_tok_() != &Tok::RParen {
             if self.cur_tok_() == &Tok::Ellipsis {
                 self.skip(); // skip ...
-                vararg = true;
             } else {
                 let clo_name = self.name();
-                let clo_arg = self.var_asgn(&clo_name, true);
+                let clo_arg = self.var_decl(&clo_name);
                 args.push(clo_arg);
                 while self.cur_tok_() == &Tok::Comma {
                     self.skip(); // skip ,
                     if self.cur_tok_() == &Tok::Ellipsis {
                         self.skip(); // skip ...
-                        vararg = true;
                         // we should break here as vararg has to be the last arg
                         break;
                     } else {
                         let arg_name = self.name();
-                        args.push(self.var_asgn(&arg_name, true));
+                        args.push(self.var_decl(&arg_name));
                     }
                 }
             }
@@ -1123,11 +1206,11 @@ impl<'a> Parser<'a> {
         let mut fun_cfg = std::mem::replace(&mut self.cur_cfg, CFGBuilder::new(args));
         self.block();
         std::mem::swap(&mut self.cur_cfg, &mut fun_cfg);
+
         self.expect_tok(Tok::End);
+        let captures = self.exit_closure();
 
-        let captured = self.exit_closure();
-
-        (fun_cfg.build(), captured)
+        fun_cfg.build(captures)
     }
 }
 
