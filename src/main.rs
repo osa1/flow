@@ -3,13 +3,16 @@
 extern crate bit_set;
 extern crate test;
 
+// exports macros
+mod utils;
+
 mod ast;
 mod cfg;
 mod lexer;
 mod parser;
+mod scoping;
 mod uniq;
-mod utils;
-mod var;
+// mod var;
 
 #[cfg(test)]
 mod test_utils;

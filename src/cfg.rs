@@ -10,7 +10,9 @@ use std::mem;
 
 use ast;
 use uniq::Uniq;
+// use utils;
 
+// remove this once macro import/export bug is fixed (originally in utils)
 macro_rules! set {
     ( $( $x:expr ),* ) => {
         {

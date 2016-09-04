@@ -2,10 +2,12 @@ use ast::*;
 use cfg::{BasicBlock, CFGBuilder, LHS, RHS, Stat, Var};
 use cfg;
 use lexer::Tok;
+use scoping::{Scopes, VarOcc};
 use uniq::{UniqCounter, ENTRY_UNIQ};
 use utils::Either;
 
 use std::collections::HashMap;
+use std::collections::HashSet;
 use std;
 
 pub struct Parser<'a> {
@@ -16,28 +18,17 @@ pub struct Parser<'a> {
     /// TODO: Maybe remove this and update the slice instead.
     pos: usize,
 
+    /// Scope handler.
+    scopes: Scopes,
+
     /// Closure definitions.
     defs: HashMap<Var, cfg::CFG>,
 
     /// Current CFG. New statements and basic blocks are added here.
-    cur_cfg: cfg::CFGBuilder,
-
-    /// Variables captured by the closure currently being compiled. Not useful
-    /// when not compiling a closure. Values are indices of variables in closure
-    /// environment.
-    captures: HashMap<Var, usize>,
+    cur_cfg: CFGBuilder,
 
     /// `Var` for `cur_cfg`. e.g. what definition we are parsing right now.
     cur_var: Var,
-
-    /// Program-level global variables.
-    global_vars: HashMap<String, Var>,
-
-    /// Lexical scopes.
-    local_vars: Vec<HashMap<String, Var>>,
-
-    /// Indices of closures scopes in `local_vars` vector.
-    clo_scope: Vec<CloScope>,
 
     /// Where to jump on `break`. Push continuation when entering a loop. Pop it
     /// afterwards.
@@ -46,18 +37,6 @@ pub struct Parser<'a> {
     /// Where to jump on goto. Push an empty map on scope entry. Pop afterwards.
     /// Inter-scope travel is a compile-time error.
     labels: Vec<HashMap<String, BasicBlock>>,
-
-    /// Variable counter used to generate fresh variables.
-    var_gen: UniqCounter,
-}
-
-/// This is the index of where the closure scope starts in `local_vars`.
-type CloScope = usize;
-
-enum VarOcc {
-    CapturedVar(Var),
-    LocalVar(Var),
-    Global,
 }
 
 /// Can the given token follow a statement? Useful when terminating statement
@@ -77,16 +56,12 @@ impl<'a> Parser<'a> {
         Parser {
             ts: ts,
             pos: 0,
+            scopes: Scopes::new(),
             defs: HashMap::new(),
+            cur_cfg: CFGBuilder::new(vec![]),
             cur_var: ENTRY_UNIQ, // special
-            cur_cfg: cfg::CFGBuilder::new(vec![]),
-            captures: HashMap::new(),
-            global_vars: HashMap::new(),
-            local_vars: vec![],
-            clo_scope: vec![],
             loop_conts: vec![],
             labels: vec![HashMap::new()],
-            var_gen: UniqCounter::new(b'p'),
         }
     }
 
@@ -125,63 +100,13 @@ impl<'a> Parser<'a> {
         self.pos += 1;
     }
 
-    /// Declare a local variable.
-    fn var_decl(&mut self, s : &str) -> Var {
-        let v = self.fresh_var();
-        let env_idx = self.local_vars.len() - 1;
-        self.local_vars[env_idx].insert(s.to_owned(), v);
-        v
-    }
-
-    fn var_local_occ(&mut self, s : &str) -> VarOcc {
-        let n_scopes = self.local_vars.len();
-        // look for local variables first
-
-        for (env_depth, local_env) in self.local_vars.iter().rev().enumerate() {
-            let current_scope_depth = n_scopes - env_depth - 1;
-            match local_env.get(s).cloned() {
-                Some(v) => {
-                    // Is this a captured variable? Closure currently being
-                    // compiled is at `self.clo_scope.last()`. If the number in
-                    // `CloScope` is smaller than the scope index we found the
-                    // variable at, then it's captured.
-                    match self.clo_scope.last().cloned() {
-                        Some(clo_scope_idx) if current_scope_depth >= clo_scope_idx => {
-                            // captured variable
-                            return VarOcc::CapturedVar(v);
-                        },
-                        _ => {
-                            // not captured
-                            return VarOcc::LocalVar(v);
-                        }
-                    }
-                },
-                None => {}, // keep searching
-            }
-        }
-
-        VarOcc::Global
-    }
-
     /// Generate a LHS of a variable (in the source program). Handles captured
     /// variables in closures.
     fn var_lhs_use(&mut self, s : &str) -> LHS {
-        match self.var_local_occ(s) {
-            VarOcc::CapturedVar(var) => LHS::Captured(var),
-            VarOcc::LocalVar(var) => LHS::Var(var),
-            VarOcc::Global => {
-                // do we know about this variable already?
-                // left: new (need to register). right: known.
-                let (var, is_new) : (Var, bool) =
-                    match self.global_vars.get(s).cloned() {
-                        None => (self.fresh_var(), true),
-                        Some(var) => (var, false),
-                    };
-                if is_new {
-                    self.global_vars.insert(s.to_owned(), var);
-                }
-                LHS::Var(var)
-            }
+        match self.scopes.var_occ(s) {
+            VarOcc::Captured(var) => LHS::Captured(var),
+            VarOcc::Local(var) => LHS::Var(var),
+            VarOcc::Global(var) => LHS::Var(var),
         }
     }
 
@@ -203,38 +128,7 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn fresh_var(&mut self) -> Var {
-        self.var_gen.fresh()
-    }
-
-    /// Enter a new lexical scope.
-    #[inline(always)]
-    fn enter_scope(&mut self) {
-        self.local_vars.push(HashMap::new());
-        self.labels.push(HashMap::new());
-    }
-
-    #[inline(always)]
-    fn enter_closure(&mut self) {
-        self.clo_scope.push(self.local_vars.len() - 1);
-        self.enter_scope();
-    }
-
-    /// Exit the current scope.
-    #[inline(always)]
-    fn exit_scope(&mut self) {
-        self.local_vars.pop().unwrap();
-        self.labels.pop().unwrap();
-    }
-
-    #[inline(always)]
-    fn exit_closure(&mut self) -> Vec<Var> {
-        self.exit_scope();
-        self.clo_scope.pop().unwrap();
-        let ret = std::mem::replace(&mut self.captures, HashMap::new());
-        // sort ret by values
-        let mut ret_vec : Vec<(Var, usize)> = ret.into_iter().collect();
-        ret_vec.sort_by_key(|&(v, k)| { k });
-        ret_vec.into_iter().map(|(v, _)| v).collect()
+        self.scopes.fresh_var()
     }
 
     #[inline(always)]
@@ -305,9 +199,9 @@ impl<'a> Parser<'a> {
 
     /// Parse a a list of statements in a new scope.
     pub fn block(&mut self) {
-        self.enter_scope();
+        self.scopes.enter();
         self.block_();
-        self.exit_scope();
+        self.scopes.exit();
     }
 
     /// Parse a list of statements in the existing scope.
@@ -483,28 +377,7 @@ impl<'a> Parser<'a> {
 
     // <name> {,<name>} in <explist> <forbody>
     fn forlist(&mut self, var1 : Id) {
-        unimplemented!();
-        // let mut vars = vec![var1];
-        // while self.cur_tok_() == &Tok::Comma {
-        //     self.skip(); // skip ,
-        //     vars.push(self.name());
-        // }
-
-        // self.expect_tok(Tok::In);
-
-        // let mut exps = vec![self.exp()];
-        // while self.cur_tok_() == &Tok::Comma {
-        //     self.skip(); // skip ,
-        //     exps.push(self.exp());
-        // }
-
-        // let body = self.forbody();
-
-        // Stmt::ForIn {
-        //     vars: vars,
-        //     exps: exps,
-        //     body: body,
-        // }
+        panic!("forlist not implemented yet");
     }
 
     fn forbody(&mut self) {
@@ -628,14 +501,14 @@ impl<'a> Parser<'a> {
         // there should be at least one name
         {
             let name = self.name();
-            let var = self.var_decl(&name);
+            let var = self.scopes.var_decl(&name);
             lhss.push(LHS::Var(var));
         }
 
         while self.cur_tok_() == &Tok::Comma {
             self.skip(); // consume ,
             let name = self.name();
-            let var = self.var_decl(&name);
+            let var = self.scopes.var_decl(&name);
             lhss.push(LHS::Var(var));
         }
 
@@ -921,7 +794,6 @@ impl<'a> Parser<'a> {
                 true
             }
         }
-
     }
 
     // A suffixedexp is either a function call, or an expression that can be
@@ -1115,19 +987,16 @@ impl<'a> Parser<'a> {
     /// Compile a function definition to CFG. Also returns captured variables.
     /// Syntax: ( <idlist> [, ...] ) <block> end
     fn fundef(&mut self, is_method : bool) -> cfg::CFG {
-        self.expect_tok(Tok::LParen);
-
-        self.enter_closure();
-
         // collect args
-        let mut args = vec![];
+        self.expect_tok(Tok::LParen);
+        let mut args : Vec<String> = Vec::new();
         if self.cur_tok_() != &Tok::RParen {
             if self.cur_tok_() == &Tok::Ellipsis {
                 self.skip(); // skip ...
             } else {
-                let clo_name = self.name();
-                let clo_arg = self.var_decl(&clo_name);
-                args.push(clo_arg);
+                // first arg
+                args.push(self.name());
+                // rest of the args
                 while self.cur_tok_() == &Tok::Comma {
                     self.skip(); // skip ,
                     if self.cur_tok_() == &Tok::Ellipsis {
@@ -1136,21 +1005,24 @@ impl<'a> Parser<'a> {
                         break;
                     } else {
                         let arg_name = self.name();
-                        args.push(self.var_decl(&arg_name));
+                        let arg_var = self.fresh_var();
+                        args.push(self.name());
                     }
                 }
             }
         }
-
         self.expect_tok(Tok::RParen);
-        let mut fun_cfg = std::mem::replace(&mut self.cur_cfg, CFGBuilder::new(args));
-        self.block();
+
+        let cfg_args = self.scopes.enter_closure(args);
+        let mut fun_cfg = std::mem::replace(&mut self.cur_cfg, CFGBuilder::new(cfg_args));
+
+        self.block_();
         std::mem::swap(&mut self.cur_cfg, &mut fun_cfg);
 
         self.expect_tok(Tok::End);
-        let captures = self.exit_closure();
 
-        fun_cfg.build(captures)
+        let captures = self.scopes.exit_closure();
+        fun_cfg.build(captures.into_iter().collect())
     }
 }
 
