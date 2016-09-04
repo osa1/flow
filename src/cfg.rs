@@ -75,9 +75,8 @@ pub enum LHS {
     /// Variable
     Var(Var),
 
-    /// Write to a captured varible at given index of the closure env.
-    /// `Var` is for debugging purposes.
-    Captured(Var, usize),
+    /// Write to a captured varible
+    Captured(Var),
 }
 
 impl LHS {
@@ -85,7 +84,7 @@ impl LHS {
         match self {
             LHS::Tbl(tbl, sel) => RHS::ReadTbl(tbl, sel),
             LHS::Var(v) => RHS::Var(v),
-            LHS::Captured(var, idx) => RHS::Captured(var, idx),
+            LHS::Captured(var) => RHS::Captured(var),
         }
     }
 }
@@ -103,9 +102,8 @@ pub enum RHS {
     Binop(Var, ast::Binop, Var),
     Unop(ast::Unop, Var),
 
-    /// Value of a captured variable at given index of the closure env.
-    /// `Var` is for debugging purposes.
-    Captured(Var, usize),
+    /// Value of a captured variable.
+    Captured(Var),
 }
 
 #[derive(Debug)]
@@ -680,7 +678,7 @@ impl LHS {
             &LHS::Var(var) => {
                 write!(buf, "{:?}", var).unwrap();
             },
-            &LHS::Captured(var, _) => {
+            &LHS::Captured(var) => {
                 write!(buf, "env[{:?}]", var).unwrap();
             }
         }
@@ -721,7 +719,7 @@ impl RHS {
                 op.print(buf);
                 write!(buf, "{:?}", a).unwrap();
             },
-            &RHS::Captured(var, _) => {
+            &RHS::Captured(var) => {
                 write!(buf, "env[{:?}]", var).unwrap();
             }
         }
