@@ -27,6 +27,7 @@ pub enum VarOcc {
 }
 
 impl VarOcc {
+    #[cfg(test)]
     pub fn is_captured(&self) -> bool {
         match self {
             &VarOcc::Captured(_) => true,
@@ -34,6 +35,7 @@ impl VarOcc {
         }
     }
 
+    #[cfg(test)]
     pub fn is_local(&self) -> bool {
         match self {
             &VarOcc::Local(_) => true,
@@ -41,6 +43,7 @@ impl VarOcc {
         }
     }
 
+    #[cfg(test)]
     pub fn is_global(&self) -> bool {
         match self {
             &VarOcc::Global(_) => true,
@@ -48,6 +51,7 @@ impl VarOcc {
         }
     }
 
+    #[cfg(test)]
     pub fn get_var(&self) -> Var {
         match self {
             &VarOcc::Captured(var) => var,
@@ -108,12 +112,12 @@ impl Scopes {
     }
 
     /// Declare a local variable.
-    pub fn var_decl(&mut self, s : &str) -> Var {
+    pub fn var_decl(&mut self, s : String) -> Var {
         let var = self.fresh_var();
         if self.local_scopes.is_empty() {
-            self.global_scope.insert(s.to_owned(), var);
+            self.global_scope.insert(s, var);
         } else {
-            self.local_scopes.last_mut().unwrap().vars.insert(s.to_owned(), var);
+            self.local_scopes.last_mut().unwrap().vars.insert(s, var);
         }
         var
     }
@@ -167,6 +171,7 @@ impl Scopes {
 #[cfg(test)]
 mod test_scoping {
     use super::*;
+    use utils;
 
     use std::collections::HashSet;
 
@@ -188,7 +193,7 @@ mod test_scoping {
         let mut scopes = Scopes::new();
         let var1 = scopes.var_occ("var1");
         scopes.enter();
-        let var2 = scopes.var_decl("var2");
+        let var2 = scopes.var_decl("var2".to_string());
         scopes.enter_closure(vec![]);
 
         let occ1 = scopes.var_occ("var2");

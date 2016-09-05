@@ -3,11 +3,10 @@ use cfg::{BasicBlock, CFGBuilder, LHS, RHS, Stat, Var};
 use cfg;
 use lexer::Tok;
 use scoping::{Scopes, VarOcc};
-use uniq::{UniqCounter, ENTRY_UNIQ};
+use uniq::{ENTRY_UNIQ};
 use utils::Either;
 
 use std::collections::HashMap;
-use std::collections::HashSet;
 use std;
 
 pub struct Parser<'a> {
@@ -114,13 +113,13 @@ impl<'a> Parser<'a> {
         match lhs {
             LHS::Tbl(tbl, sel) => {
                 let ret = self.fresh_var();
-                self.add_stat(Stat::Assign(LHS::Var(ret), RHS::ReadTbl(tbl, sel)));
+                self.assign(LHS::Var(ret), RHS::ReadTbl(tbl, sel));
                 ret
             },
             LHS::Var(v) => v,
             LHS::Captured(v) => {
                 let ret = self.fresh_var();
-                self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Captured(v)));
+                self.assign(LHS::Var(ret), RHS::Captured(v));
                 ret
             }
         }
@@ -139,6 +138,32 @@ impl<'a> Parser<'a> {
     #[inline(always)]
     fn add_stat(&mut self, stat : cfg::Stat) {
         self.cur_cfg.add_stat(stat);
+    }
+
+    #[inline(always)]
+    fn assign(&mut self, lhs : LHS, rhs : RHS) {
+        self.add_stat(Stat::Assign(lhs, rhs));
+    }
+
+    #[inline(always)]
+    fn multiassign(&mut self, mut lhss : Vec<LHS>, rhss : Vec<RHS>) {
+        let n_lhss = lhss.len();
+        let n_rhss = rhss.len();
+
+        if n_lhss > n_rhss {
+            // last assignment will be a multi assign
+            // TODO: remove clone()s
+            for i in 0 .. n_lhss - 1 {
+                self.assign(lhss[i].clone(), rhss[i].clone());
+            }
+            // last one is a multi assign
+            for _ in lhss.drain(0 .. n_rhss - 1) {} // ugh
+            self.add_stat(Stat::MultiAssign(lhss, rhss[rhss.len() - 1].clone()));
+        } else {
+            for (lhs, rhs) in lhss.into_iter().zip(rhss.into_iter()) {
+                self.assign(lhs, rhs);
+            }
+        }
     }
 
     #[inline(always)]
@@ -168,25 +193,25 @@ impl<'a> Parser<'a> {
 
     fn emit_string(&mut self, s : String) -> Var {
         let ret = self.fresh_var();
-        self.add_stat(Stat::Assign(LHS::Var(ret), RHS::String(s)));
+        self.assign(LHS::Var(ret), RHS::String(s));
         ret
     }
 
     fn emit_number(&mut self, num : Number) -> Var {
         let ret = self.fresh_var();
-        self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Number(num)));
+        self.assign(LHS::Var(ret), RHS::Number(num));
         ret
     }
 
     fn emit_nil(&mut self) -> Var {
         let ret = self.fresh_var();
-        self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Nil));
+        self.assign(LHS::Var(ret), RHS::Nil);
         ret
     }
 
     fn emit_bool(&mut self, b : bool) -> Var {
         let ret = self.fresh_var();
-        self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Bool(b)));
+        self.assign(LHS::Var(ret), RHS::Bool(b));
         ret
     }
 }
@@ -297,7 +322,7 @@ impl<'a> Parser<'a> {
         self.terminate(cont_bb);
     }
 
-    // <condition> do <block> end
+    /// <condition> do <block> end
     fn whilestat(&mut self) {
         // bb that checks the condition
         let cond_bb = self.new_bb();
@@ -338,7 +363,10 @@ impl<'a> Parser<'a> {
     }
 
     // exp1, exp2 [,exp3] <forbody>
-    fn fornum(&mut self, var : Id) {
+    fn fornum(&mut self, cond_var : Id) {
+        self.scopes.enter();
+        let cond_var = self.scopes.var_decl(cond_var);
+
         // evaluate start, end, and step expressions
         let start = self.exp();
         self.expect_tok(Tok::Comma);
@@ -346,9 +374,9 @@ impl<'a> Parser<'a> {
         let step = {
             if self.cur_tok_() == &Tok::Comma {
                 self.skip();
-                Some(self.exp())
+                self.exp()
             } else {
-                None
+                self.emit_number(Number::Int(1))
             }
         };
 
@@ -362,28 +390,108 @@ impl<'a> Parser<'a> {
         // start with the condition
         self.terminate(cond_bb);
         self.set_bb(cond_bb);
-        let cond_var = self.fresh_var();
-        self.add_stat(Stat::Assign(LHS::Var(cond_var), RHS::Binop(start, Binop::LT, end)));
+        self.assign(LHS::Var(cond_var), RHS::Binop(start, Binop::LT, end));
         self.cond_terminate(cond_var, body_bb, cont_bb);
 
         // body
         self.set_bb(body_bb);
-        self.forbody();
-        self.terminate(cond_bb); // loop
+        self.expect_tok(Tok::Do);
+        self.block_();
+        self.expect_tok(Tok::End);
+        // update the counter
+        self.assign(LHS::Var(start), RHS::Binop(start, Binop::Add, step));
+        // loop
+        self.terminate(cond_bb);
 
-        // continue
+        self.scopes.exit();
+
         self.set_bb(cont_bb);
     }
 
     // <name> {,<name>} in <explist> <forbody>
     fn forlist(&mut self, var1 : Id) {
-        panic!("forlist not implemented yet");
-    }
 
-    fn forbody(&mut self) {
-        self.expect_tok(Tok::Do);
-        self.block();
-        self.expect_tok(Tok::End);
+        // From the user manual:
+        //
+        //   A for statement like
+        //
+        //        for var_1, ···, var_n in explist do block end
+        //
+        //   is equivalent to the code:
+        //
+        //        do
+        //          local f, s, var = explist
+        //          while true do
+        //            local var_1, ···, var_n = f(s, var)
+        //            if var_1 == nil then break end
+        //            var = var_1
+        //            block
+        //          end
+        //        end
+
+        self.scopes.enter();
+
+        let mut vars = vec![LHS::Var(self.scopes.var_decl(var1))];
+        while self.cur_tok_() == &Tok::Comma {
+            let var_name = self.name();
+            vars.push(LHS::Var(self.scopes.var_decl(var_name)));
+        }
+
+        self.expect_tok(Tok::In);
+
+        // this evaluates exps in the explist which is what we want
+        let mut exps = vec![self.exp()];
+        while self.cur_tok_() == &Tok::Comma {
+            exps.push(self.exp());
+        }
+
+        // iterator function
+        let f_var = self.fresh_var();
+        // TODO: initial state?
+        let s_var = self.fresh_var();
+        // TODO: not sure what this stands for..
+        let var = self.fresh_var();
+
+        let mut exps : &mut [Var] = &mut exps;
+
+        //
+        // stupid borrow checker strikes again below
+        //
+
+        // try to bind f_var
+        let exps = {
+            if !exps.is_empty() {
+                self.assign(LHS::Var(f_var), RHS::Var(exps[0]));
+                &mut exps[1..]
+            } else {
+                exps
+            }
+        };
+
+        // try to bind s_var
+        let exps = {
+            if !exps.is_empty() {
+                self.assign(LHS::Var(s_var), RHS::Var(exps[0]));
+                &mut exps[1..]
+            } else {
+                exps
+            }
+        };
+
+        // try to bind var
+        if !exps.is_empty() {
+            self.assign(LHS::Var(var), RHS::Var(exps[0]));
+        }
+        // rest of the exps are ignored as they're already evaluated at this point
+
+        let body_bb = self.new_bb();
+        let cont_bb = self.new_bb();
+
+        // jump to the loop body
+        self.terminate(body_bb);
+        self.set_bb(body_bb);
+
+        self.multiassign(vars, vec![RHS::FunCall(f_var, vec![s_var, var])]);
     }
 
     fn repeatstat(&mut self) {
@@ -406,19 +514,18 @@ impl<'a> Parser<'a> {
     fn init_closure(&mut self, fun : Var, captures : Vec<Var>) -> Var {
         // initialize the table (closure)
         let table_var = self.fresh_var();
-        self.add_stat(Stat::Assign(LHS::Var(table_var), RHS::NewTbl));
+        self.assign(LHS::Var(table_var), RHS::NewTbl);
 
         // write the function to the table
         let fun_idx_var = self.fresh_var();
-        self.add_stat(Stat::Assign(LHS::Var(fun_idx_var), RHS::Number(Number::Int(0))));
-        self.add_stat(Stat::Assign(LHS::Tbl(table_var, fun_idx_var), RHS::Var(fun)));
+        self.assign(LHS::Var(fun_idx_var), RHS::Number(Number::Int(0)));
+        self.assign(LHS::Tbl(table_var, fun_idx_var), RHS::Var(fun));
 
         // write captured values to the table
         for (capture_idx, captured) in captures.into_iter().enumerate() {
             let capture_idx_var = self.fresh_var();
-            self.add_stat(Stat::Assign(LHS::Var(capture_idx_var),
-                                       RHS::Number(Number::Int((capture_idx + 1) as i64))));
-            self.add_stat(Stat::Assign(LHS::Tbl(table_var, capture_idx_var), RHS::Var(captured)));
+            self.assign(LHS::Var(capture_idx_var), RHS::Number(Number::Int((capture_idx + 1) as i64)));
+            self.assign(LHS::Tbl(table_var, capture_idx_var), RHS::Var(captured));
         }
 
         table_var
@@ -460,7 +567,7 @@ impl<'a> Parser<'a> {
             };
         }
 
-        self.add_stat(Stat::Assign(lhs, RHS::Var(clo)));
+        self.assign(lhs, RHS::Var(clo));
     }
 
     /// (tbl, fields, optional method name)
@@ -492,7 +599,7 @@ impl<'a> Parser<'a> {
 
         let clo = self.init_closure(fun_var, fun_captures);
         let lhs = self.var_lhs_use(&fname);
-        self.add_stat(Stat::Assign(lhs, RHS::Var(clo)));
+        self.assign(lhs, RHS::Var(clo));
     }
 
     // <namelist> [= <explist>]
@@ -501,50 +608,28 @@ impl<'a> Parser<'a> {
         // there should be at least one name
         {
             let name = self.name();
-            let var = self.scopes.var_decl(&name);
+            let var = self.scopes.var_decl(name);
             lhss.push(LHS::Var(var));
         }
 
         while self.cur_tok_() == &Tok::Comma {
             self.skip(); // consume ,
             let name = self.name();
-            let var = self.scopes.var_decl(&name);
+            let var = self.scopes.var_decl(name);
             lhss.push(LHS::Var(var));
         }
 
         let mut rhss = vec![];
         if self.cur_tok_() == &Tok::Assign {
             self.skip(); // consume =
-            rhss.push(self.exp());
+            rhss.push(RHS::Var(self.exp()));
             while self.cur_tok_() == &Tok::Comma {
                 self.skip(); // consume ,
-                rhss.push(self.exp());
+                rhss.push(RHS::Var(self.exp()));
             }
         }
 
-        // TODO: Duplicate
-
-        let n_lhss = lhss.len();
-        let n_rhss = rhss.len();
-
-        if n_lhss == n_rhss {
-            for i in 0 .. n_lhss {
-                // TODO: we should be able to remove clone() calls here
-                self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i].clone())));
-            }
-        } else if n_lhss > n_rhss {
-            for i in 0 .. n_lhss - 1 {
-                self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i].clone())));
-            }
-            // last one is a multi assign
-            for _ in lhss.drain(0 .. n_rhss - 1) {}
-            self.add_stat(Stat::MultiAssign(lhss, RHS::Var(rhss[rhss.len() - 1].clone())));
-        } else { // n_rhss > n_lhss
-            for i in 0 .. n_rhss {
-                self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i].clone())));
-                // TODO: ignore the rest?
-            }
-        }
+        self.multiassign(lhss, rhss);
     }
 
     fn labelstat(&mut self) {
@@ -609,33 +694,13 @@ impl<'a> Parser<'a> {
                 }
                 // not a "local" assignment, so a '= <exp>' has to follow
                 self.expect_tok(Tok::Assign);
-                let mut rhss = vec![self.exp()];
+                let mut rhss = vec![RHS::Var(self.exp())];
                 while self.cur_tok_() == &Tok::Comma {
                     self.skip(); // skip ,
-                    rhss.push(self.exp());
+                    rhss.push(RHS::Var(self.exp()));
                 }
 
-                let n_lhss = lhss.len();
-                let n_rhss = rhss.len();
-
-                if n_lhss == n_rhss {
-                    for i in 0 .. n_lhss {
-                        // TODO: we should be able to remove clone() calls here
-                        self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i])));
-                    }
-                } else if n_lhss > n_rhss {
-                    for i in 0 .. n_lhss - 1 {
-                        self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i])));
-                    }
-                    // last one is a multi assign
-                    for _ in lhss.drain(0 .. n_rhss - 1) {}
-                    self.add_stat(Stat::MultiAssign(lhss, RHS::Var(rhss[rhss.len() - 1])));
-                } else { // n_rhss > n_lhss
-                    for i in 0 .. n_rhss {
-                        self.add_stat(Stat::Assign(lhss[i].clone(), RHS::Var(rhss[i])));
-                        // TODO: ignore the rest?
-                    }
-                }
+                self.multiassign(lhss, rhss);
             },
             Either::Right(_) => {
                 // function call, nothing to do
@@ -699,7 +764,7 @@ impl<'a> Parser<'a> {
                 self.skip(); // skip op
                 let e = self.exp_(UNOP_PREC);
                 let ret = self.fresh_var();
-                self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Unop(unop, e)));
+                self.assign(LHS::Var(ret), RHS::Unop(unop, e));
                 ret
             },
         };
@@ -714,7 +779,7 @@ impl<'a> Parser<'a> {
             self.skip(); // skip op
             let e2 = self.exp_(op_prec.right);
             let ret = self.fresh_var();
-            self.add_stat(Stat::Assign(LHS::Var(ret), RHS::Binop(e1, op, e2)));
+            self.assign(LHS::Var(ret), RHS::Binop(e1, op, e2));
             e1 = ret;
         }
 
@@ -746,7 +811,7 @@ impl<'a> Parser<'a> {
     // [fieldlist] '}'
     fn constructor(&mut self) -> Var {
         let ret = self.fresh_var();
-        self.add_stat(Stat::Assign(LHS::Var(ret), RHS::NewTbl));
+        self.assign(LHS::Var(ret), RHS::NewTbl);
 
         // current index to use for expressions without keys
         // eg. in { a, b, c } we use this as keys for a, b and c.
@@ -776,7 +841,7 @@ impl<'a> Parser<'a> {
                 self.expect_tok(Tok::RBracket);
                 self.expect_tok(Tok::Assign);
                 let e2 = self.exp();
-                self.add_stat(Stat::Assign(LHS::Tbl(tbl, e1), RHS::Var(e2)));
+                self.assign(LHS::Tbl(tbl, e1), RHS::Var(e2));
                 false
             },
             &Tok::Ident(ref n) if &self.ts[self.pos + 1] == &Tok::Assign => {
@@ -784,13 +849,13 @@ impl<'a> Parser<'a> {
                 self.skip(); // skip =
                 let e2 = self.exp();
                 let sel = self.emit_string(n.to_owned());
-                self.add_stat(Stat::Assign(LHS::Tbl(tbl, sel), RHS::Var(e2)));
+                self.assign(LHS::Tbl(tbl, sel), RHS::Var(e2));
                 false
             },
             _ => {
                 let e = self.exp();
                 let sel = self.emit_number(Number::Int(pos));
-                self.add_stat(Stat::Assign(LHS::Tbl(tbl, sel), RHS::Var(e)));
+                self.assign(LHS::Tbl(tbl, sel), RHS::Var(e));
                 true
             }
         }
@@ -824,7 +889,7 @@ impl<'a> Parser<'a> {
                     let name = self.name();
                     let e1 = self.fresh_var();
                     let sel = self.emit_string(name);
-                    self.add_stat(Stat::Assign(LHS::Var(e1), RHS::ReadTbl(e0, sel)));
+                    self.assign(LHS::Var(e1), RHS::ReadTbl(e0, sel));
                     e0 = e1;
                 },
                 &Tok::LBracket => {
@@ -833,7 +898,7 @@ impl<'a> Parser<'a> {
                     let field = self.exp();
                     self.expect_tok(Tok::RBracket);
                     let e1 = self.fresh_var();
-                    self.add_stat(Stat::Assign(LHS::Var(e1), RHS::ReadTbl(e0, field)));
+                    self.assign(LHS::Var(e1), RHS::ReadTbl(e0, field));
                     e0 = e1;
                 },
                 _ => { break; }
@@ -920,9 +985,9 @@ impl<'a> Parser<'a> {
                 // binder for the result
                 let ret_var = self.fresh_var();
                 let meth_sel = self.emit_string(mname);
-                self.add_stat(Stat::Assign(LHS::Var(fun_var), RHS::ReadTbl(f, meth_sel)));
+                self.assign(LHS::Var(fun_var), RHS::ReadTbl(f, meth_sel));
                 args.insert(0, fun_var);
-                self.add_stat(Stat::Assign(LHS::Var(ret_var), RHS::FunCall(fun_var, args)));
+                self.assign(LHS::Var(ret_var), RHS::FunCall(fun_var, args));
                 ret_var
             },
             _ => {
@@ -930,7 +995,7 @@ impl<'a> Parser<'a> {
                 args.insert(0, f.clone());
                 // binder for the result
                 let ret_var = self.fresh_var();
-                self.add_stat(Stat::Assign(LHS::Var(ret_var), RHS::FunCall(f, args)));
+                self.assign(LHS::Var(ret_var), RHS::FunCall(f, args));
                 ret_var
             },
         }
@@ -987,6 +1052,8 @@ impl<'a> Parser<'a> {
     /// Compile a function definition to CFG. Also returns captured variables.
     /// Syntax: ( <idlist> [, ...] ) <block> end
     fn fundef(&mut self, is_method : bool) -> cfg::CFG {
+        // TODO: Bind "self"
+
         // collect args
         self.expect_tok(Tok::LParen);
         let mut args : Vec<String> = Vec::new();
@@ -1004,8 +1071,6 @@ impl<'a> Parser<'a> {
                         // we should break here as vararg has to be the last arg
                         break;
                     } else {
-                        let arg_name = self.name();
-                        let arg_var = self.fresh_var();
                         args.push(self.name());
                     }
                 }

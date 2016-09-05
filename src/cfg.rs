@@ -61,8 +61,6 @@ pub struct CFGBuilder {
 pub enum Stat {
     Assign(LHS, RHS),
 
-    FunCall(Var, Vec<Var>),
-
     /// (lhss, rhs)
     MultiAssign(Vec<LHS>, RHS),
 
@@ -81,17 +79,7 @@ pub enum LHS {
     Captured(Var),
 }
 
-impl LHS {
-    pub fn to_rhs(self) -> RHS {
-        match self {
-            LHS::Tbl(tbl, sel) => RHS::ReadTbl(tbl, sel),
-            LHS::Var(v) => RHS::Var(v),
-            LHS::Captured(var) => RHS::Captured(var),
-        }
-    }
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum RHS {
     Nil,
     Var(Var),
@@ -240,7 +228,7 @@ impl<'b> Iterator for BasicBlockIter<'b> {
 }
 
 impl CFG {
-    // This is only used in tests.
+    #[cfg(test)]
     fn new(args : Vec<Var>) -> CFG {
         let mut entry_block_doms = BitSet::new();
         entry_block_doms.insert(ENTRY_BLOCK.0);
@@ -255,6 +243,7 @@ impl CFG {
         }
     }
 
+    #[cfg(test)]
     pub fn new_block(&mut self) -> BasicBlock {
         let mut doms = BitSet::new();
         let ret = self.n_blocks();
@@ -282,16 +271,10 @@ impl CFG {
 
     /// Make `node1` a predecessor of `node2`. Also makes `node2` a successor of
     /// `node1`.
+    #[cfg(test)]
     pub fn mk_pred(&mut self, node1 : BasicBlock, node2 : BasicBlock) {
         self.blocks[node2.0].preds.insert(node1.0);
         self.blocks[node1.0].succs.insert(node2.0);
-    }
-
-    /// Make `node1` a successor of `node2`. Also makes `node2` a predecessor of
-    /// `node1`.
-    pub fn mk_succ(&mut self, node1 : BasicBlock, node2 : BasicBlock) {
-        self.blocks[node2.0].succs.insert(node1.0);
-        self.blocks[node1.0].preds.insert(node2.0);
     }
 
     /// Does `block1` dominate `block2` ?
@@ -646,16 +629,6 @@ impl Stat {
                 lhs.print(buf);
                 write!(buf, " = ").unwrap();
                 rhs.print(buf);
-            },
-            &Stat::FunCall(fun, ref args) => {
-                write!(buf, "{:?}(", fun).unwrap();
-                let mut first = true;
-                for arg in args {
-                    if !first { write!(buf, ", ").unwrap(); }
-                    first = false;
-                    write!(buf, "{:?}", arg).unwrap();
-                }
-                write!(buf, ")").unwrap();
             },
             &Stat::MultiAssign(ref lhss, ref rhs) => {
                 let mut first = true;
