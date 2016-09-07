@@ -107,7 +107,7 @@ impl Scopes {
         let top = self.local_scopes.pop().unwrap();
         match top.captures {
             Some(captures) => captures,
-            None => panic!("Scopes.exit(): In a non-closure scope."),
+            None => panic!("Scopes.exit_closure(): In a non-closure scope."),
         }
     }
 
