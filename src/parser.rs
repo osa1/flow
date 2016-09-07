@@ -170,7 +170,17 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(always)]
-    fn terminate(&mut self, bb : cfg::BasicBlock) {
+    fn enter_loop(&mut self, cont : BasicBlock) {
+        self.loop_conts.push(cont);
+    }
+
+    #[inline(always)]
+    fn exit_loop(&mut self) {
+        self.loop_conts.pop().unwrap();
+    }
+
+    #[inline(always)]
+    fn terminate(&mut self, bb : BasicBlock) {
         self.cur_cfg.terminate(cfg::Terminator::Jmp(bb));
     }
 
@@ -337,6 +347,7 @@ impl<'a> Parser<'a> {
         // start with the condition
         self.terminate(cond_bb);
         self.set_bb(cond_bb);
+        self.enter_loop(cont_bb);
         let cond = self.exp();
         self.cond_terminate(cond, body_bb, cont_bb);
 
@@ -346,6 +357,7 @@ impl<'a> Parser<'a> {
         self.terminate(cond_bb); // loop
         self.expect_tok(Tok::End);
 
+        self.exit_loop();
         self.set_bb(cont_bb);
     }
 
@@ -393,6 +405,7 @@ impl<'a> Parser<'a> {
         // start with the condition
         self.terminate(cond_bb);
         self.set_bb(cond_bb);
+        self.enter_loop(cont_bb);
         self.assign(LHS::Var(cond_var), RHS::Binop(start, Binop::LT, end));
         self.cond_terminate(cond_var, body_bb, cont_bb);
 
@@ -407,6 +420,7 @@ impl<'a> Parser<'a> {
         self.terminate(cond_bb);
 
         self.scopes.exit();
+        self.exit_loop();
 
         self.set_bb(cont_bb);
     }
@@ -494,9 +508,16 @@ impl<'a> Parser<'a> {
         // jump to the loop body
         self.terminate(body_bb);
         self.set_bb(body_bb);
+        self.enter_loop(cont_bb);
         self.multiassign(vars, vec![RHS::FunCall(f_var, vec![s_var, var])]);
 
+
+        self.expect_tok(Tok::Do);
+        self.block_();
+        self.expect_tok(Tok::End);
+
         self.scopes.exit();
+        self.exit_loop();
 
         self.set_bb(cont_bb);
     }
@@ -509,11 +530,17 @@ impl<'a> Parser<'a> {
 
         // jump to the loop
         self.terminate(begin_bb);
-        self.block(); // TODO: Scoping here is different
+        self.scopes.enter();
+
+        self.enter_loop(cont_bb);
+        self.block_();
         self.expect_tok(Tok::Until);
 
         let cond = self.exp();
         self.cond_terminate(cond, begin_bb, cont_bb);
+
+        self.scopes.exit();
+        self.exit_loop();
 
         self.set_bb(cont_bb);
     }
