@@ -1,3 +1,6 @@
+//! This is a messy implementation of a lexer.
+//! TODO: Float parsing does not work well (overflows).
+
 use std::char;
 use std;
 
@@ -118,6 +121,10 @@ fn hex_digit(ch : char) -> Option<u8> {
     }
 }
 
+fn hex_digit_(ch : char) -> Result<u8, LexerError> {
+    hex_digit(ch).ok_or(format!("Invalid hex digit: {:?}", ch))
+}
+
 fn dec_digit(ch : char) -> Option<u8> {
     let ch = ch as u8;
     if ch >= b'0' && ch <= b'9' {
@@ -125,6 +132,10 @@ fn dec_digit(ch : char) -> Option<u8> {
     } else {
         None
     }
+}
+
+fn dec_digit_(ch : char) -> Result<u8, LexerError> {
+    dec_digit(ch).ok_or(format!("Invalid dec digit: {:?}", ch))
 }
 
 /// Letters, digits, and underscores are valid identifier characters.
@@ -163,26 +174,147 @@ fn number_to_float_number(n : Number) -> Number {
     }
 }
 
-fn parse_int(s : &str) -> Option<i64> {
-    // TODO: port from lobject.c:l_str2int
-    s.parse().ok()
+/*
+fn parse_int(s : &str) -> Result<i64, LexerError> {
+    // ported from lobject.c:l_str2int
+
+    let mut s = s.as_bytes();
+    let mut neg = false;
+
+    if s[0] == b'-' {
+        neg = true;
+        s = &s[1..];
+    }
+
+    let mut num : i64 = 0;
+    if s[0] == b'0' && s.len() > 2 && (s[1] == b'x' || s[1] == b'X') {
+        // hex
+        s = &s[2..]; // skip prefix
+        for c in s {
+            let digit = try!(hex_digit_(*c as char));
+            num = num * 16 + (digit as i64);
+        }
+    } else {
+        // decimal
+        for c in s {
+            let digit = try!(dec_digit_(*c as char));
+            num = num * 16 + (digit as i64);
+        }
+    }
+
+    Ok(if neg { - num } else { num })
+}
+*/
+
+// these two parse just a sequence of digits. no exponents or anything.
+fn parse_dec_int(s : &str) -> Result<i64, LexerError> {
+    parse_int(s, dec_digit_)
 }
 
-fn parse_float(s : &str) -> Option<f64> {
-    // TODO: port from lobject.c:l_str2d
-    s.parse().ok()
+fn parse_hex_int(s : &str) -> Result<i64, LexerError> {
+    parse_int(s, hex_digit_)
+}
+
+fn parse_int(s : &str, digit_fn : fn(char) -> Result<u8, LexerError>) -> Result<i64, LexerError> {
+    let mut ret = 0;
+    for c in s.chars() {
+        let digit = try!(digit_fn(c)) as i64;
+        ret = ret * 10 + digit;
+    }
+    Ok(ret)
+}
+
+fn parse_float(s : &str) -> Result<f64, LexerError> {
+    let (s, digit_fn, hex) : (&[u8], fn(char) -> Result<u8, LexerError>, bool) =  {
+        let s = s.as_bytes();
+        if s[0] == b'0' && s.len() > 2 && (s[1] == b'x' || s[1] == b'X') {
+            (&s[2..], hex_digit_, true)
+        } else {
+            (s, dec_digit_, false)
+        }
+    };
+
+    let mut num : f64 = 0.0;
+    let mut dot = false; // seen dot? ('.')
+    let mut exp = false; // seen exp prefix? ('p' or 'P')
+
+    let mut e : u32 = 0; // exponent. has to be positive because pow expects u32
+    let mut e_neg = false; // exponent is negated?
+
+    let mut c_idx = 0;
+
+    // negate the number?
+    let neg =
+        if s[c_idx] == b'-' {
+            c_idx += 1;
+            true
+        } else {
+            false
+        };
+
+    loop {
+        if c_idx >= s.len() { break; }
+        let c = unsafe { s.get_unchecked(c_idx) };
+
+        // println!("current char: {} is_hex: {}", *c as char, hex);
+
+        if *c == b'.' {
+            dot = true;
+            c_idx += 1;
+        } else if *c == b'p' || *c == b'P' || (!hex && (*c == b'e' || *c  == b'E')) {
+            c_idx += 1;
+            e_neg = if s[c_idx] == b'-' {
+                c_idx += 1; true
+            } else if s[c_idx] == b'+' {
+                c_idx += 1;
+                false
+            } else {
+                false
+            };
+            let p = if hex {
+                try!(parse_hex_int(unsafe { std::str::from_utf8_unchecked(&s[c_idx .. ]) }))
+            } else {
+                try!(parse_dec_int(unsafe { std::str::from_utf8_unchecked(&s[c_idx .. ]) }))
+            };
+            return Ok(num * if e_neg {
+                1f64 / (10u32.pow(p as u32) as f64)
+            } else {
+                10u32.pow(p as u32) as f64
+            });
+        } else {
+            let digit = try!(digit_fn(*c as char)) as f64;
+            if dot {
+                e += 1;
+                num = num + digit * (1f64 / 10u32.pow(e) as f64);
+            } else {
+                num = num * 10f64 + digit;
+            }
+            c_idx += 1;
+        }
+
+    }
+
+    Ok(num)
 }
 
 fn parse_num(s : &str) -> Result<Number, LexerError> {
-    match parse_int(s) {
-        None => {
-            match parse_float(s) {
-                None => Err(format!("Can't parse number {}", s)),
-                Some(f) => Ok(Number::Float(f)),
-            }
-        },
-        Some(i) => Ok(Number::Int(i)),
-    }
+    let float_ret = parse_float(s);
+    // let int_ret = parse_int(s);
+
+    // match int_ret {
+    //     Ok(i) =>
+    //         Ok(Number::Int(i)),
+    //     Err(int_err) =>
+    //         match float_ret {
+    //             Ok(f) =>
+    //                 Ok(Number::Float(f)),
+    //             Err(float_err) =>
+    //                 Err(format!("Can't parse number.\n{}\n{}", int_err, float_err)),
+    //         },
+
+    // }
+
+    float_ret.map(|f| Number::Float(f))
 }
 
 pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
@@ -513,7 +645,7 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                         c = chars.next();
                         col += 1;
                     },
-                    Some('-') => {
+                    Some('-') if buf.is_empty() || seen_exp => {
                         // either the first character, or right after an
                         // exponent prefix
                         if buf.is_empty() {
@@ -545,7 +677,7 @@ pub fn tokenize(str : &str) -> Result<Vec<Tok>, LexerError> {
                             }
                         }
                     },
-                    Some('+') => {
+                    Some('+') if seen_exp => {
                         // right after an exponent prefix
                         let c1 = buf.pop();
                         match c1 {
@@ -799,6 +931,7 @@ mod test_lexer {
     use test::Bencher;
 
     use test_utils::*;
+    use ast::Number;
 
     #[test]
     fn test_lexer_1() {
@@ -816,6 +949,17 @@ mod test_lexer {
     fn lexer_nums() {
         let nums = "3.0 3.1416 314.16e-2 0.31416E1 34e1 0x0.1E 0xA23p-4  0X1.921FB54442D18P+1";
         assert_eq!(tokenize(nums).unwrap().len(), 8);
+    }
+
+    #[test]
+    fn lexer_nums_2() {
+        let single_num = "0E+1";
+        assert_eq!(tokenize(single_num), Ok(vec![Tok::Num(Number::Float(0.0f64))]));
+
+        let two_nums = "0x0E+1";
+        assert_eq!(tokenize(two_nums), Ok(vec![Tok::Num(Number::Float(14.0f64)),
+                                               Tok::Plus,
+                                               Tok::Num(Number::Float(1.0f64))]));
     }
 
     #[bench]
