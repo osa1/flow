@@ -153,12 +153,14 @@ impl<'a> Parser<'a> {
         if n_lhss > n_rhss {
             // last assignment will be a multi assign
             // TODO: remove clone()s
-            for i in 0 .. n_lhss - 1 {
-                self.assign(lhss[i].clone(), rhss[i].clone());
+            if n_rhss > 0 {
+                for i in 0 .. n_rhss - 1 {
+                    self.assign(lhss[i].clone(), rhss[i].clone());
+                }
+                // last one is a multi assign
+                for _ in lhss.drain(0 .. n_rhss - 1) {} // ugh
+                self.add_stat(Stat::MultiAssign(lhss, rhss[rhss.len() - 1].clone()));
             }
-            // last one is a multi assign
-            for _ in lhss.drain(0 .. n_rhss - 1) {} // ugh
-            self.add_stat(Stat::MultiAssign(lhss, rhss[rhss.len() - 1].clone()));
         } else {
             for (lhs, rhs) in lhss.into_iter().zip(rhss.into_iter()) {
                 self.assign(lhs, rhs);
@@ -433,6 +435,7 @@ impl<'a> Parser<'a> {
 
         let mut vars = vec![LHS::Var(self.scopes.var_decl(var1))];
         while self.cur_tok_() == &Tok::Comma {
+            self.skip(); // skip ,
             let var_name = self.name();
             vars.push(LHS::Var(self.scopes.var_decl(var_name)));
         }
@@ -490,8 +493,9 @@ impl<'a> Parser<'a> {
         // jump to the loop body
         self.terminate(body_bb);
         self.set_bb(body_bb);
-
         self.multiassign(vars, vec![RHS::FunCall(f_var, vec![s_var, var])]);
+
+        self.scopes.exit();
     }
 
     fn repeatstat(&mut self) {
@@ -793,7 +797,8 @@ impl<'a> Parser<'a> {
             Tok::Nil => { self.skip(); self.emit_nil() },
             Tok::True => { self.skip(); self.emit_bool(true) }
             Tok::False => { self.skip(); self.emit_bool(false) }
-            Tok::Ellipsis => { panic!("... is not yet supported ") }
+            // Tok::Ellipsis => { panic!("... is not yet supported ") }
+            Tok::Ellipsis => { self.skip(); self.fresh_var() } // TODO
             Tok::LBrace => { self.skip(); self.constructor() },
             Tok::Function => {
                 self.skip(); // skip function
