@@ -79,13 +79,6 @@ pub enum Tok {
     EOS,
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub struct TokPos {
-    tok: Tok,
-    line: i32,
-    col: i32,
-}
-
 /// Could the char be a first character for an identifier or keyword?
 fn is_first_id_char(ch : char) -> bool {
     let ch = ch as u8;
@@ -208,93 +201,99 @@ fn parse_int(s : &str) -> Result<i64, LexerError> {
 
 // these two parse just a sequence of digits. no exponents or anything.
 fn parse_dec_int(s : &str) -> Result<i64, LexerError> {
-    parse_int(s, dec_digit_)
+    parse_int(s, dec_digit_, 10)
 }
 
 fn parse_hex_int(s : &str) -> Result<i64, LexerError> {
-    parse_int(s, hex_digit_)
+    parse_int(s, hex_digit_, 16)
 }
 
-fn parse_int(s : &str, digit_fn : fn(char) -> Result<u8, LexerError>) -> Result<i64, LexerError> {
+#[inline(always)]
+fn parse_int(s : &str, digit_fn : fn(char) -> Result<u8, LexerError>, mult : i64) -> Result<i64, LexerError> {
     let mut ret = 0;
     for c in s.chars() {
         let digit = try!(digit_fn(c)) as i64;
-        ret = ret * 10 + digit;
+        ret = ret * mult + digit;
     }
     Ok(ret)
 }
 
+/// Following PUC-Lua's implementation of floating point lexer, we only use this many most
+/// significant digits in floating point numbers to avoid overflows.
+/// (TODO: What's the max number to use here to avoid overflows?)
+const MAX_FLOAT_DIGITS : u8 = 30;
+
 fn parse_float(s : &str) -> Result<f64, LexerError> {
-    let (s, digit_fn, hex) : (&[u8], fn(char) -> Result<u8, LexerError>, bool) =  {
+    let (s, digit_fn, hex, mult) : (&[u8], fn(char) -> Result<u8, LexerError>, bool, f64) =  {
         let s = s.as_bytes();
         if s[0] == b'0' && s.len() > 2 && (s[1] == b'x' || s[1] == b'X') {
-            (&s[2..], hex_digit_, true)
+            (&s[2..], hex_digit_, true, 16f64)
         } else {
-            (s, dec_digit_, false)
+            (s, dec_digit_, false, 10f64)
         }
     };
 
-    let mut num : f64 = 0.0;
+    let mut num : f64 = 0f64;
+    let mut digits_read : u8 = 0;
+
     let mut dot = false; // seen dot? ('.')
-    let mut exp = false; // seen exp prefix? ('p' or 'P')
-
-    let mut e : u32 = 0; // exponent. has to be positive because pow expects u32
-    let mut e_neg = false; // exponent is negated?
-
-    let mut c_idx = 0;
+    let mut exp : i64 = 0; // exponent to the base
+    let mut c_idx = 0; // character index
 
     // negate the number?
-    let neg =
-        if s[c_idx] == b'-' {
+    let neg_mult : f64 =
+        if unsafe { *s.get_unchecked(c_idx) } == b'-' {
             c_idx += 1;
-            true
+            -1.0f64
         } else {
-            false
+            1.0f64
         };
 
     loop {
         if c_idx >= s.len() { break; }
         let c = unsafe { s.get_unchecked(c_idx) };
 
-        // println!("current char: {} is_hex: {}", *c as char, hex);
-
         if *c == b'.' {
             dot = true;
             c_idx += 1;
-        } else if *c == b'p' || *c == b'P' || (!hex && (*c == b'e' || *c  == b'E')) {
+        } else if ( hex && (*c == b'p' || *c == b'P')) // binary exponent
+               || (!hex && (*c == b'e' || *c == b'E')) // decimal exponent
+               {
             c_idx += 1;
-            e_neg = if s[c_idx] == b'-' {
-                c_idx += 1; true
-            } else if s[c_idx] == b'+' {
+            let e_neg = if s[c_idx] == b'-' {
                 c_idx += 1;
-                false
+                true
             } else {
+                if s[c_idx] == b'+' { c_idx += 1; }
                 false
             };
-            let p = if hex {
-                try!(parse_hex_int(unsafe { std::str::from_utf8_unchecked(&s[c_idx .. ]) }))
-            } else {
-                try!(parse_dec_int(unsafe { std::str::from_utf8_unchecked(&s[c_idx .. ]) }))
+            let p = {
+                let p = try!(parse_dec_int(unsafe { std::str::from_utf8_unchecked(&s[c_idx .. ]) }));
+                if e_neg { -p } else { p }
             };
-            return Ok(num * if e_neg {
-                1f64 / (10u32.pow(p as u32) as f64)
+            if hex {
+                // binary exponent
+                return Ok(neg_mult * num * 2f64.powi((exp * 4 + p) as i32));
             } else {
-                10u32.pow(p as u32) as f64
-            });
+                // decimal exponent
+                return Ok(neg_mult * num * 10f64.powi((exp + p) as i32));
+            }
         } else {
             let digit = try!(digit_fn(*c as char)) as f64;
-            if dot {
-                e += 1;
-                num = num + digit * (1f64 / 10u32.pow(e) as f64);
-            } else {
-                num = num * 10f64 + digit;
+            if digits_read != MAX_FLOAT_DIGITS {
+                digits_read += 1;
+                num = num * mult + digit;
+                if dot {
+                    exp -= 1;
+                }
+            } else if !dot {
+                exp += 1;
             }
             c_idx += 1;
         }
-
     }
 
-    Ok(num)
+    Ok(neg_mult * num * mult.powi(exp as i32))
 }
 
 fn parse_num(s : &str) -> Result<Number, LexerError> {
@@ -945,10 +944,25 @@ mod test_lexer {
                       ]));
     }
 
+    fn f(num : f64) -> Tok {
+        Tok::Num(Number::Float(num))
+    }
+
     #[test]
     fn lexer_nums() {
         let nums = "3.0 3.1416 314.16e-2 0.31416E1 34e1 0x0.1E 0xA23p-4  0X1.921FB54442D18P+1";
-        assert_eq!(tokenize(nums).unwrap().len(), 8);
+        let ts = tokenize(nums);
+        assert!(ts.is_ok());
+        let ts = ts.unwrap();
+
+        assert_eq!(ts[0], f(3.0_f64));
+        assert_eq!(ts[1], f(3.1416_f64));
+        assert_eq!(ts[2], f(3.1416_f64));
+        assert_eq!(ts[3], f(3.1416_f64));
+        assert_eq!(ts[4], f(340_f64));
+        assert_eq!(ts[5], f(0.1171875_f64));
+        assert_eq!(ts[6], f(162.1875_f64));
+        assert_eq!(ts[7], f(3.141592653589793));
     }
 
     #[test]
