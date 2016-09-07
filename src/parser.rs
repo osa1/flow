@@ -7,6 +7,7 @@ use uniq::{ENTRY_UNIQ};
 use utils::Either;
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std;
 
 pub struct Parser<'a> {
@@ -496,6 +497,8 @@ impl<'a> Parser<'a> {
         self.multiassign(vars, vec![RHS::FunCall(f_var, vec![s_var, var])]);
 
         self.scopes.exit();
+
+        self.set_bb(cont_bb);
     }
 
     fn repeatstat(&mut self) {
@@ -636,15 +639,32 @@ impl<'a> Parser<'a> {
         self.multiassign(lhss, rhss);
     }
 
+    fn get_label_bb(&mut self, lbl : String) -> BasicBlock {
+        let mut label_map = self.labels.last_mut().unwrap();
+        match label_map.entry(lbl) {
+            Entry::Occupied(ent) => {
+                *ent.get()
+            },
+            Entry::Vacant(ent) => {
+                let bb = self.cur_cfg.new_bb(); // self.new_bb()
+                ent.insert(bb);
+                bb
+            },
+        }
+    }
+
     fn labelstat(&mut self) {
         let label = self.name();
         self.expect_tok(Tok::DColon);
+        let bb = self.get_label_bb(label);
+        self.terminate(bb);
+        self.set_bb(bb);
+    }
 
-        let new_bb = self.new_bb();
-        self.terminate(new_bb);
-        self.set_bb(new_bb);
-        let n_labels = self.labels.len();
-        self.labels[n_labels - 1].insert(label, new_bb);
+    fn gotostat(&mut self) {
+        let lbl = self.name();
+        let bb = self.get_label_bb(lbl);
+        self.terminate(bb);
     }
 
     fn returnstat(&mut self) {
@@ -668,19 +688,6 @@ impl<'a> Parser<'a> {
         let temp_bb = self.new_bb();
         self.terminate(jmp_target);
         self.set_bb(temp_bb);
-    }
-
-    fn gotostat(&mut self) {
-        let lbl = self.name();
-        let n_labels = self.labels.len();
-        match self.labels[n_labels - 1].get(&lbl).cloned() {
-            Some(bb) => {
-                self.terminate(bb);
-            },
-            None => {
-                panic!("goto: Can't find target {}", lbl);
-            },
-        }
     }
 
     // function call or assignment. Both start with a <suffixedexp>.
