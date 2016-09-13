@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 pub struct Scopes {
     local_scopes: Vec<Scope>,
-    global_scope: HashMap<String, Var>,
+    global_scope: Scope,
     var_gen: UniqCounter,
 }
 
@@ -65,7 +65,7 @@ impl Scopes {
     pub fn new() -> Scopes {
         Scopes {
             local_scopes: vec![],
-            global_scope: HashMap::new(),
+            global_scope: Scope { vars: HashMap::new(), captures: None },
             var_gen: UniqCounter::new(b's'),
         }
     }
@@ -114,11 +114,7 @@ impl Scopes {
     /// Declare a local variable.
     pub fn var_decl(&mut self, s : String) -> Var {
         let var = self.fresh_var();
-        if self.local_scopes.is_empty() {
-            self.global_scope.insert(s, var);
-        } else {
-            self.local_scopes.last_mut().unwrap().vars.insert(s, var);
-        }
+        self.local_scopes.last_mut().unwrap_or(&mut self.global_scope).vars.insert(s, var);
         var
     }
 
@@ -154,12 +150,12 @@ impl Scopes {
         }
 
         // global variable
-        let var = match self.global_scope.get(s).cloned() {
+        let var = match self.global_scope.vars.get(s).cloned() {
             // weird code as a borrow checker workaround
             Some(var) => { return VarOcc::Global(var); },
             None => { self.fresh_var() },
         };
-        self.global_scope.insert(s.to_owned(), var);
+        self.global_scope.vars.insert(s.to_owned(), var);
         VarOcc::Global(var)
     }
 }
