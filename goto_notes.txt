@@ -1,0 +1,68 @@
+I think the language manual is leaving some room for different behaviors here,
+but to follow PUC-Lua, I run some experiments.
+
+First, no matter what, we can't have multiple definitions of the same label
+within the same scope.
+
+Second, we can't see labels in child scopes, but we can see labels in parent
+scopes. E.g. this doesn't work: (label not visible)
+
+    do
+        goto x
+        do
+            ::x::
+            print("first")
+        end
+    end
+
+But this works:
+
+    do
+        do
+            goto x
+            print("first")
+        end
+        ::x::
+    end
+
+Third, when multiple labels with same names are in scope, the one in the
+closest scope has the precedence. Example:
+
+    ::x::
+    print("first")
+    do
+        ::x::
+        print("second")
+        do
+            print("third")
+            goto x
+        end
+    end
+
+This prints "second\nthird" in a loop. This works the same way when labels are
+defined after uses:
+
+    do
+        do
+            goto x
+            print("first")
+        end
+        ::x::
+        print("second")
+    end
+    ::x::
+    print("third")
+
+This prints "second\nthird" once.
+
+--------------------------------------------------------------------------------
+
+These rules are making generating CFG with correct basic block targets for jump
+statement tricky, because when we see a use of a label we can't tell where to
+jump, in the worst case until we finish parsing the current function (jumping
+out from a function is invalid).
+
+We can't add a temporary terminator to delay jump target resolving, because
+once we have the CFG for a function we lose the scoping info completely. So we
+need to somehow do this on the way (or alternatively, we could parse function
+code to an AST and do two passes, but we want to avoid this).
