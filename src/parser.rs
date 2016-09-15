@@ -67,6 +67,7 @@ impl<'a> Parser<'a> {
     /// Entry point. Returns list of definitions.
     pub fn parse(mut self) -> HashMap<Var, CFG> {
         self.block();
+        self.expect_tok(Tok::EOS);
         let mut defs = self.defs;
         let captures = vec![]; // no captures at the top level
         defs.insert(self.cur_var, self.cur_cfg.build(captures));
@@ -346,6 +347,7 @@ impl<'a> Parser<'a> {
             self.terminate(cont_bb);
         }
 
+        self.expect_tok(Tok::End);
         self.set_bb(cont_bb);
     }
 
@@ -723,7 +725,7 @@ impl<'a> Parser<'a> {
         if self.loop_conts.len() == 0 {
             panic!("break: not in loop");
         }
-        let jmp_target = self.loop_conts[self.loop_conts.len() - 1];
+        let jmp_target = self.loop_conts.last().unwrap().clone();
         // statements after break should not be added to the current bb
         let temp_bb = self.new_bb();
         self.terminate(jmp_target);
