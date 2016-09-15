@@ -316,6 +316,7 @@ impl<'a> Parser<'a> {
         match self.cur_tok_() {
             &Tok::ElseIf | &Tok::Else => {},
             _ => {
+                self.expect_tok(Tok::End);
                 // then_bb was previously jumping to cont_bb, so fix that
                 self.set_bb(then_bb);
                 self.terminate(else_bb);
@@ -485,6 +486,7 @@ impl<'a> Parser<'a> {
         // this evaluates exps in the explist which is what we want
         let mut exps = vec![self.exp()];
         while self.cur_tok_() == &Tok::Comma {
+            self.skip(); // skip ,
             exps.push(self.exp());
         }
 
