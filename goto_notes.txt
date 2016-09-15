@@ -66,3 +66,175 @@ We can't add a temporary terminator to delay jump target resolving, because
 once we have the CFG for a function we lose the scoping info completely. So we
 need to somehow do this on the way (or alternatively, we could parse function
 code to an AST and do two passes, but we want to avoid this).
+
+--------------------------------------------------------------------------------
+
+The simplest case that we can get rid of right away is when we're jumping to a
+label that's 1) defined in the current scope 2) defined before the use.
+
+For the other cases, we maintain two sets of basic blocks:
+
+- UnknownDest: Blocks with unknown jump destinations. These are for goto
+  statements to completely unknown labels (e.g. label was not defined even in
+  parent scopes). We update these as soon as we read a label definition in a
+  parent scope.
+
+  Note that we must pay attention to not do this mistake:
+
+      do
+          goto x
+      end
+      do
+          ::x:: -- x is not visible to the goto above!
+      end
+      ::x:: -- should jump to this one
+
+  The solution to make sure that `goto` statements obey the scoping rules
+  (except they can jump forward). In our example above, first `x` label won't
+  be visible because that creates a new scope that is not visible by the
+  previous `do` block.
+
+  However, we should be able to see labels defined later in a parent scope:
+
+      do
+          goto x
+          do
+              ::x::
+          end
+      end
+      ::x::
+
+- JumpsToParent: Blocks in this set jumps to a label in a parent scope. We keep
+  these in a separate set, becuse if we see a label declaration in a closer
+  scope, we need to update the jump target.
+
+  Example:
+
+     ::x::
+     print("first")
+     do
+         do
+             goto x
+         end
+         ::x::
+     end
+
+  This should print "first" once, because "goto x" is a forward jump. But when
+  we first see it, we have a label `x` in scope, so we set that as the target.
+  When we see the second `x`, we should be able to update this destination.
+
+  We can even see the forward `x` in the same scope, as in
+
+     ::x::
+     print("first")
+     do
+         do
+             goto x
+             ::x::
+         end
+     end
+
+Finally, when we exit a closure scope, we need to make sure `UnknownDest` set
+is empty, because jumps can't enter of exit a function. Similarly we can forget
+the `JumpsToParent` set. On function entry, we initialize these as empty sets.
+
+--------------------------------------------------------------------------------
+
+So to sketch the algorithm, we have these cases to consider
+
+- Scope entry
+- Scope exit
+- Function entry
+- Function exit
+- Saw a goto statement
+- Saw a label statement
+
+Let's consider them separately.
+
+===========
+Scope entry
+===========
+
+Increment the "scope depth" by one. This will be used to annotate gotos in
+`JumpsToParent` set.
+
+Initialize `JumpsToParent` set empty. This is necessary to avoid things like:
+
+    ::x::
+    do
+        do
+            goto x
+        end
+        do
+            ::x::
+        end
+    end
+
+This program should loop. A goto in `JumpsToParent` has to jump to a parent
+scope, so when we enter a new scope that set has to be initialized as empty
+because this new scope is not parent of any scopes yet.
+
+==========
+Scope exit
+==========
+
+Decrement the "scope depth" by one.
+
+Restore old `JumpsToParent` set, add current `JumpsToParent` set to it. This is
+because a goto in a child scope will can actually jump to a label that'll be
+defined here.
+
+==============
+Function entry
+==============
+
+Move `JumpsToParent` and `UnknownDest` to a temporary, initialize them as
+empty. Increment "scope depth" by one.
+
+=============
+Function exit
+=============
+
+Check that `UnknownDest` is empty. Otherwise we have an error in the source
+program. Throw these sets away and move `JumpsToParent` and `UnknownDest` moved
+to a temporary on function entry back to their place.
+
+====================
+Saw a goto statement
+====================
+
+We first look at the current scope as a special case. If we see the label, we
+just jump there, and we won't add this goto statement to any of the sets.
+
+Otherwise, we have to add it to either `JumpsToParent` or `UnknownDest`, and
+maybe also set a (potentially) temporary jump target. For that we start looking
+at scope stack in reversed order, skipping the first scope (which is the
+current scope).
+
+- If we see the label in a scope at depth, say, 4, we set the jump target, and
+  add this statement to `JumpsToParent` set.
+
+- If we don't see the label anywhere in the stack, we add this statement to
+  `UnknownDest` set. We also create a new basic block and use it as jump
+  target. When we see a label for this, we use this basic block for that label.
+
+=====================
+Saw a label statement
+=====================
+
+We check if the label was defined in the current scope before. If so, that's an
+error. Otherwise we add it to the scope.
+
+Then we need to look at two sets and potentially update some of them.
+
+- JumpsToParent: If we see a goto for the current label, and our scope depth is
+  larger than its current target, but smaller than or equal to its depth, we
+  update its target to jump here instead.
+
+  (Note that this also handles forward jumps to same scope)
+
+- UnknownDest: If we see a goto for the current label, we use the basic block
+  creates for the goto as our new basic block for this label. We then compare
+  current scope depth with `goto`s scope depth. If equal, then we remove the
+  goto from the set. If not (current depth has to be less), then we move this
+  goto to `JumpsToParent` set.
