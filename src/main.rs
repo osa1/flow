@@ -8,6 +8,7 @@ mod utils;
 
 mod ast;
 mod cfg;
+mod labels;
 mod lexer;
 mod parser;
 mod scoping;

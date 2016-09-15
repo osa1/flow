@@ -1,6 +1,6 @@
 use ast::*;
-use cfg::{BasicBlock, CFGBuilder, LHS, RHS, Stat, Var};
-use cfg;
+use cfg::{BasicBlock, CFGBuilder, CFG, LHS, RHS, Stat, Var, Terminator};
+use labels::Labels;
 use lexer::Tok;
 use scoping::{Scopes, VarOcc};
 use uniq::{ENTRY_UNIQ};
@@ -21,8 +21,11 @@ pub struct Parser<'a> {
     /// Scope handler.
     scopes: Scopes,
 
+    /// Label handler.
+    labels: Labels,
+
     /// Closure definitions.
-    defs: HashMap<Var, cfg::CFG>,
+    defs: HashMap<Var, CFG>,
 
     /// Current CFG. New statements and basic blocks are added here.
     cur_cfg: CFGBuilder,
@@ -33,10 +36,6 @@ pub struct Parser<'a> {
     /// Where to jump on `break`. Push continuation when entering a loop. Pop it
     /// afterwards.
     loop_conts: Vec<BasicBlock>,
-
-    /// Where to jump on goto. Push an empty map on scope entry. Pop afterwards.
-    /// Inter-scope travel is a compile-time error.
-    labels: Vec<HashMap<String, BasicBlock>>,
 }
 
 /// Can the given token follow a statement? Useful when terminating statement
@@ -57,16 +56,16 @@ impl<'a> Parser<'a> {
             ts: ts,
             pos: 0,
             scopes: Scopes::new(),
+            labels: Labels::new(),
             defs: HashMap::new(),
             cur_cfg: CFGBuilder::new(vec![]),
             cur_var: ENTRY_UNIQ, // special
             loop_conts: vec![],
-            labels: vec![HashMap::new()],
         }
     }
 
     /// Entry point. Returns list of definitions.
-    pub fn parse(mut self) -> HashMap<Var, cfg::CFG> {
+    pub fn parse(mut self) -> HashMap<Var, CFG> {
         self.block();
         let mut defs = self.defs;
         let captures = vec![]; // no captures at the top level
@@ -132,12 +131,12 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(always)]
-    fn register_def(&mut self, var : Var, cfg : cfg::CFG) {
+    fn register_def(&mut self, var : Var, cfg : CFG) {
         self.defs.insert(var, cfg);
     }
 
     #[inline(always)]
-    fn add_stat(&mut self, stat : cfg::Stat) {
+    fn add_stat(&mut self, stat : Stat) {
         self.cur_cfg.add_stat(stat);
     }
 
@@ -181,26 +180,26 @@ impl<'a> Parser<'a> {
 
     #[inline(always)]
     fn terminate(&mut self, bb : BasicBlock) {
-        self.cur_cfg.terminate(cfg::Terminator::Jmp(bb));
+        self.cur_cfg.terminate(Terminator::Jmp(bb));
     }
 
     #[inline(always)]
-    fn cond_terminate(&mut self, cond : Var, then_bb : cfg::BasicBlock, else_bb : cfg::BasicBlock) {
-        self.cur_cfg.terminate(cfg::Terminator::CondJmp(cond, then_bb, else_bb));
+    fn cond_terminate(&mut self, cond : Var, then_bb : BasicBlock, else_bb : BasicBlock) {
+        self.cur_cfg.terminate(Terminator::CondJmp(cond, then_bb, else_bb));
     }
 
     #[inline(always)]
     fn ret(&mut self, exps : Vec<Var>) {
-        self.cur_cfg.terminate(cfg::Terminator::Ret(exps));
+        self.cur_cfg.terminate(Terminator::Ret(exps));
     }
 
     #[inline(always)]
-    fn new_bb(&mut self) -> cfg::BasicBlock {
+    fn new_bb(&mut self) -> BasicBlock {
         self.cur_cfg.new_bb()
     }
 
     #[inline(always)]
-    fn set_bb(&mut self, bb : cfg::BasicBlock) {
+    fn set_bb(&mut self, bb : BasicBlock) {
         self.cur_cfg.set_bb(bb)
     }
 
@@ -324,7 +323,7 @@ impl<'a> Parser<'a> {
     }
 
     /// <condition> then <block>
-    fn cond_then(&mut self, then_bb : cfg::BasicBlock, else_bb : cfg::BasicBlock, cont_bb : cfg::BasicBlock) {
+    fn cond_then(&mut self, then_bb : BasicBlock, else_bb : BasicBlock, cont_bb : BasicBlock) {
         let cond = self.exp();
         self.expect_tok(Tok::Then);
         self.cond_terminate(cond, then_bb, else_bb);
@@ -666,32 +665,34 @@ impl<'a> Parser<'a> {
         self.multiassign(lhss, rhss);
     }
 
-    fn get_label_bb(&mut self, lbl : String) -> BasicBlock {
-        let mut label_map = self.labels.last_mut().unwrap();
-        match label_map.entry(lbl) {
-            Entry::Occupied(ent) => {
-                *ent.get()
-            },
-            Entry::Vacant(ent) => {
-                let bb = self.cur_cfg.new_bb(); // self.new_bb()
-                ent.insert(bb);
-                bb
-            },
-        }
-    }
+    // fn get_label_bb(&mut self, lbl : String) -> BasicBlock {
+    //     let mut label_map = self.labels.last_mut().unwrap();
+    //     match label_map.entry(lbl) {
+    //         Entry::Occupied(ent) => {
+    //             *ent.get()
+    //         },
+    //         Entry::Vacant(ent) => {
+    //             let bb = self.cur_cfg.new_bb(); // self.new_bb()
+    //             ent.insert(bb);
+    //             bb
+    //         },
+    //     }
+    // }
 
     fn labelstat(&mut self) {
-        let label = self.name();
-        self.expect_tok(Tok::DColon);
-        let bb = self.get_label_bb(label);
-        self.terminate(bb);
-        self.set_bb(bb);
+        unimplemented!()
+        // let label = self.name();
+        // self.expect_tok(Tok::DColon);
+        // let bb = self.get_label_bb(label);
+        // self.terminate(bb);
+        // self.set_bb(bb);
     }
 
     fn gotostat(&mut self) {
-        let lbl = self.name();
-        let bb = self.get_label_bb(lbl);
-        self.terminate(bb);
+        unimplemented!()
+        // let lbl = self.name();
+        // let bb = self.get_label_bb(lbl);
+        // self.terminate(bb);
     }
 
     fn returnstat(&mut self) {
@@ -1090,7 +1091,7 @@ impl<'a> Parser<'a> {
 
     /// Compile a function definition to CFG. Also returns captured variables.
     /// Syntax: ( <idlist> [, ...] ) <block> end
-    fn fundef(&mut self, is_method : bool) -> cfg::CFG {
+    fn fundef(&mut self, is_method : bool) -> CFG {
         // TODO: Bind "self"
 
         // collect args

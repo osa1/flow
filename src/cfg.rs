@@ -96,12 +96,16 @@ pub enum RHS {
     Captured(Var),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Terminator {
     Jmp(BasicBlock),
     CondJmp(Var, BasicBlock, BasicBlock),
     Ret(Vec<Var>),
     // TODO: switch etc. for optimizations?
+
+    /// This is used when we see a goto statement before seeing a label for it. All Unknowns should
+    /// be removing before building the CFG.
+    Unknown,
 }
 
 impl CFGBuilder {
@@ -123,6 +127,10 @@ impl CFGBuilder {
         unsafe { self.blocks.get_unchecked_mut(self.cur_bb.0) }.term = term;
     }
 
+    pub fn terminate_bb(&mut self, bb: BasicBlock, term: Terminator) {
+        unsafe { self.blocks.get_unchecked_mut(bb.0) }.term = term;
+    }
+
     /// Create a fresh basic block.
     pub fn new_bb(&mut self) -> BasicBlock {
         let ret = BasicBlock(self.blocks.len());
@@ -136,6 +144,11 @@ impl CFGBuilder {
         self.cur_bb = bb;
     }
 
+    /// Get the current basic block.
+    pub fn cur_bb(&self) -> BasicBlock {
+        return self.cur_bb;
+    }
+
     /// Finalize the builder and generate a CFG.
     pub fn build(self, captures : Vec<Var>) -> CFG {
         let mut cfg = CFG {
@@ -145,6 +158,11 @@ impl CFGBuilder {
         };
         cfg.build();
         cfg
+    }
+
+    #[cfg(test)]
+    pub fn bb_terminator(&self, bb: BasicBlock) -> Terminator {
+        self.blocks[bb.0].term.clone()
     }
 }
 
@@ -617,6 +635,9 @@ impl Terminator {
                     first = false;
                     write!(buf, "{:?}", ret).unwrap();
                 }
+            },
+            &Terminator::Unknown => {
+                write!(buf, "<unknown>").unwrap();
             }
         }
     }
