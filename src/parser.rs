@@ -7,7 +7,7 @@ use uniq::{ENTRY_UNIQ};
 use utils::Either;
 
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
+use std::collections::HashSet;
 use std;
 
 pub struct Parser<'a> {
@@ -228,17 +228,43 @@ impl<'a> Parser<'a> {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
+// Scoping
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+impl<'a> Parser<'a> {
+    fn enter_scope(&mut self) {
+        self.scopes.enter();
+        self.labels.enter_scope();
+    }
+
+    fn exit_scope(&mut self) {
+        self.labels.exit_scope();
+        self.scopes.exit();
+    }
+
+    fn enter_closure(&mut self, args: Vec<String>) -> Vec<Var> {
+        self.labels.enter_closure();
+        self.scopes.enter_closure(args)
+    }
+
+    fn exit_closure(&mut self) -> HashSet<Var> {
+        self.labels.exit_closure();
+        self.scopes.exit_closure()
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
 // Statements
-////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 impl<'a> Parser<'a> {
 
     /// Parse a a list of statements in a new scope.
     pub fn block(&mut self) {
-        self.scopes.enter();
+        self.enter_scope();
         self.block_();
-        self.scopes.exit();
+        self.exit_scope();
     }
 
     /// Parse a list of statements in the existing scope.
@@ -378,7 +404,7 @@ impl<'a> Parser<'a> {
 
     // exp1, exp2 [,exp3] <forbody>
     fn fornum(&mut self, cond_var : Id) {
-        self.scopes.enter();
+        self.enter_scope();
         let cond_var = self.scopes.var_decl(cond_var);
 
         // evaluate start, end, and step expressions
@@ -418,7 +444,7 @@ impl<'a> Parser<'a> {
         // loop
         self.terminate(cond_bb);
 
-        self.scopes.exit();
+        self.exit_scope();
         self.exit_loop();
 
         self.set_bb(cont_bb);
@@ -445,7 +471,7 @@ impl<'a> Parser<'a> {
         //          end
         //        end
 
-        self.scopes.enter();
+        self.enter_scope();
 
         let mut vars = vec![LHS::Var(self.scopes.var_decl(var1))];
         while self.cur_tok_() == &Tok::Comma {
@@ -515,7 +541,7 @@ impl<'a> Parser<'a> {
         self.block_();
         self.expect_tok(Tok::End);
 
-        self.scopes.exit();
+        self.exit_scope();
         self.exit_loop();
 
         self.set_bb(cont_bb);
@@ -529,7 +555,7 @@ impl<'a> Parser<'a> {
 
         // jump to the loop
         self.terminate(begin_bb);
-        self.scopes.enter();
+        self.enter_scope();
 
         self.enter_loop(cont_bb);
         self.block_();
@@ -538,7 +564,7 @@ impl<'a> Parser<'a> {
         let cond = self.exp();
         self.cond_terminate(cond, begin_bb, cont_bb);
 
-        self.scopes.exit();
+        self.exit_scope();
         self.exit_loop();
 
         self.set_bb(cont_bb);
@@ -665,34 +691,18 @@ impl<'a> Parser<'a> {
         self.multiassign(lhss, rhss);
     }
 
-    // fn get_label_bb(&mut self, lbl : String) -> BasicBlock {
-    //     let mut label_map = self.labels.last_mut().unwrap();
-    //     match label_map.entry(lbl) {
-    //         Entry::Occupied(ent) => {
-    //             *ent.get()
-    //         },
-    //         Entry::Vacant(ent) => {
-    //             let bb = self.cur_cfg.new_bb(); // self.new_bb()
-    //             ent.insert(bb);
-    //             bb
-    //         },
-    //     }
-    // }
-
     fn labelstat(&mut self) {
-        unimplemented!()
-        // let label = self.name();
-        // self.expect_tok(Tok::DColon);
-        // let bb = self.get_label_bb(label);
-        // self.terminate(bb);
-        // self.set_bb(bb);
+        let label = self.name();
+        self.expect_tok(Tok::DColon);
+        let label_bb = self.new_bb();
+        self.terminate(label_bb);
+        self.set_bb(label_bb);
+        self.labels.label(label, label_bb, &mut self.cur_cfg);
     }
 
     fn gotostat(&mut self) {
-        unimplemented!()
-        // let lbl = self.name();
-        // let bb = self.get_label_bb(lbl);
-        // self.terminate(bb);
+        let lbl = self.name();
+        self.labels.goto(lbl, self.cur_cfg.cur_bb(), &mut self.cur_cfg);
     }
 
     fn returnstat(&mut self) {
@@ -1118,7 +1128,7 @@ impl<'a> Parser<'a> {
         }
         self.expect_tok(Tok::RParen);
 
-        let cfg_args = self.scopes.enter_closure(args);
+        let cfg_args = self.enter_closure(args);
         let mut fun_cfg = std::mem::replace(&mut self.cur_cfg, CFGBuilder::new(cfg_args));
 
         self.block_();
@@ -1126,7 +1136,7 @@ impl<'a> Parser<'a> {
 
         self.expect_tok(Tok::End);
 
-        let captures = self.scopes.exit_closure();
+        let captures = self.exit_closure();
         fun_cfg.build(captures.into_iter().collect())
     }
 }

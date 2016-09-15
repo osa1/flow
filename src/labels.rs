@@ -98,6 +98,7 @@ impl Labels {
         match self.labels.last_mut().unwrap().get(&lbl) {
             Some(bb) => {
                 // This is the final destination, we don't add the goto to any of the sets.
+                cfg_builder.terminate_bb(cur_bb, Terminator::Jmp(*bb));
                 return Some(*bb);
             },
             None => { /* keep searching */ }
