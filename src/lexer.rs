@@ -160,13 +160,6 @@ macro_rules! fail {
 
 pub type LexerError = String;
 
-fn number_to_float_number(n : Number) -> Number {
-    match n {
-        Number::Int(i) => Number::Float(i as f64),
-        _ => n,
-    }
-}
-
 /*
 fn parse_int(s : &str) -> Result<i64, LexerError> {
     // ported from lobject.c:l_str2int
@@ -202,10 +195,6 @@ fn parse_int(s : &str) -> Result<i64, LexerError> {
 // these two parse just a sequence of digits. no exponents or anything.
 fn parse_dec_int(s : &str) -> Result<i64, LexerError> {
     parse_int(s, dec_digit_, 10)
-}
-
-fn parse_hex_int(s : &str) -> Result<i64, LexerError> {
-    parse_int(s, hex_digit_, 16)
 }
 
 #[inline(always)]
