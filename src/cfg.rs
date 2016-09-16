@@ -103,8 +103,8 @@ pub enum Terminator {
     Ret(Vec<Var>),
     // TODO: switch etc. for optimizations?
 
-    /// This is used when we see a goto statement before seeing a label for it. All Unknowns should
-    /// be removing before building the CFG.
+    /// This is used when we see a goto statement before seeing a label for it. All `Unknown`s
+    /// should be removed before returning a `CFG` from `CFGBuilder`.
     Unknown,
 }
 
@@ -333,6 +333,7 @@ impl CFG {
         BasicBlockIter { bitset_iter: self.blocks[block.0].dom_tree_children.iter() }
     }
 
+    #[test(cfg)]
     pub fn dom_frontier(&self, block : BasicBlock) -> BasicBlockIter {
         BasicBlockIter { bitset_iter: self.blocks[block.0].dom_frontier.iter() }
     }
@@ -345,6 +346,7 @@ impl CFG {
         self.blocks[block.0].phis.insert(var);
     }
 
+    #[cfg(test)]
     pub fn add_defined_var(&mut self, block : BasicBlock, var : Var) {
         self.blocks[block.0].vars.insert(var);
     }
