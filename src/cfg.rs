@@ -25,36 +25,38 @@ macro_rules! set {
     };
 }
 
-////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Basic blocks are kept abstract and only manipulated via the CFG they belong.
-// Internally we don't use this type because we don't get required instances of
-// u32 automatically (no GND).
+// Basic blocks are kept abstract and only manipulated via the CFG they belong. Internally we don't
+// use this type because we don't get required instances of u32 automatically (no GND).
 #[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
 pub struct BasicBlock(usize);
 
 pub static ENTRY_BLOCK : BasicBlock = BasicBlock(0);
 
-////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
-/// Variables in CFGs are just Uniqs. Keep a symbol table if you need to attach
-/// more information to the variables.
+/// Variables in CFGs are just Uniqs. Keep a symbol table if you need to attach more information to
+/// the variables.
 pub type Var = Uniq;
 
-////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 pub struct CFGBuilder {
     /// INVARIANT: There's at least ENTRY_BLOCK.
     blocks: Vec<BasicBlock_>,
 
     /// Arguments of the function.
-    /// TODO: Remove this from the builder. Builder should just keep some basic
-    /// blocks.
     args: Vec<Var>,
 
-    /// Current basic block. New statements are added here. Initially the entry
-    /// block.
+    /// Current basic block. New statements are added here. Initially the entry block.
     cur_bb: BasicBlock,
+
+    /// All variables mentioned in the CFG.
+    vars: HashSet<Var>,
+
+    /// Definition sites of variables.
+    defsites: HashMap<Var, HashSet<BasicBlock>>,
 }
 
 #[derive(Debug)]
@@ -114,11 +116,91 @@ impl CFGBuilder {
             blocks: vec![BasicBlock_::new()],
             args: args,
             cur_bb: ENTRY_BLOCK,
+            vars: HashSet::new(),
+            defsites: HashMap::new(),
+        }
+    }
+
+    /// Update variables and defsites.
+    fn process_stat_lhs(&mut self, lhs: &LHS) {
+        match lhs {
+            &LHS::Tbl(v1, v2) => {
+                self.vars.insert(v1);
+                self.vars.insert(v2);
+            },
+            &LHS::Var(v) => {
+                self.vars.insert(v);
+                self.insert_defsite(v);
+            },
+            &LHS::Captured(v) => {
+                self.vars.insert(v);
+                self.insert_defsite(v);
+            },
+        }
+    }
+
+    /// Add current basic block as a defsite for the given variable.
+    fn insert_defsite(&mut self, var: Var) {
+        match self.defsites.entry(var) {
+            Entry::Vacant(entry) => {
+                entry.insert(set!(self.cur_bb));
+            },
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().insert(self.cur_bb);
+            },
+        }
+    }
+
+    /// Update variables and defsites.
+    fn process_stat_rhs(&mut self, rhs: &RHS) {
+        match rhs {
+            &RHS::Nil => {},
+            &RHS::Var(v) => {
+                self.vars.insert(v);
+            },
+            &RHS::Bool(_) => {},
+            &RHS::Number(_) => {},
+            &RHS::String(_) => {},
+            &RHS::FunCall(fun, ref args) => {
+                self.vars.insert(fun);
+                for arg in args {
+                    self.vars.insert(*arg);
+                }
+            },
+            &RHS::NewTbl => {},
+            &RHS::ReadTbl(v1, v2) => {
+                self.vars.insert(v1);
+                self.vars.insert(v2);
+            },
+            &RHS::Binop(v1, _, v2) => {
+                self.vars.insert(v1);
+                self.vars.insert(v2);
+            },
+            &RHS::Unop(_, v1) => {
+                self.vars.insert(v1);
+            },
+            &RHS::Captured(v) => {
+                self.vars.insert(v);
+            },
         }
     }
 
     /// Add a statement to the current basic block.
     pub fn add_stat(&mut self, stat : Stat) {
+        // Take a peek at the statement to update defsites etc.
+        match &stat {
+            &Stat::Assign(ref lhs, ref rhs) => {
+                self.process_stat_lhs(lhs);
+                self.process_stat_rhs(rhs);
+            },
+            &Stat::MultiAssign(ref lhss, ref rhs) => {
+                for lhs in lhss {
+                    self.process_stat_lhs(lhs);
+                }
+                self.process_stat_rhs(rhs);
+            },
+        }
+
         unsafe { self.blocks.get_unchecked_mut(self.cur_bb.0) }.stats.push(stat);
     }
 
@@ -155,6 +237,8 @@ impl CFGBuilder {
             blocks: self.blocks,
             args: self.args,
             captures: captures,
+            vars: self.vars,
+            defsites: self.defsites,
         };
         cfg.build();
         cfg
@@ -166,7 +250,7 @@ impl CFGBuilder {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[derive(Debug)]
 pub struct CFG {
@@ -178,6 +262,12 @@ pub struct CFG {
 
     /// Captured variables.
     captures: Vec<Var>,
+
+    /// All variables mentioned in the CFG.
+    vars: HashSet<Var>,
+
+    /// Definition sites of variables.
+    defsites: HashMap<Var, HashSet<BasicBlock>>,
 }
 
 #[derive(Debug)]
@@ -196,13 +286,12 @@ struct BasicBlock_ {
     /// Every path from S0 (entry) to this block needs to visit these.
     dominators: BitSet,
 
-    /// Immediate dominator of the block. `ENTRY_BLOCK` doesn't have one. This
-    /// gives the parent in the dominator tree. Since `ENTRY_BLOCK` is the root,
-    /// it doesn't have an `immediate_dom`.
+    /// Immediate dominator of the block. `ENTRY_BLOCK` doesn't have one. This gives the parent in
+    /// the dominator tree. Since `ENTRY_BLOCK` is the root, it doesn't have an `immediate_dom`.
     immediate_dom: Option<usize>,
 
-    /// Blocks that have this block as immediate dominator. This gives children
-    /// in the dominator tree.
+    /// Blocks that have this block as immediate dominator. This gives children in the dominator
+    /// tree.
     dom_tree_children: BitSet,
 
     /// Dominance frontier of this block.
@@ -339,7 +428,7 @@ impl CFG {
     }
 
     pub fn has_phi(&self, block : BasicBlock, var : Var) -> bool {
-        self.blocks[block.0].phis.contains(&var)
+        self.blocks[block.0].  phis.contains(&var)
     }
 
     pub fn insert_phi(&mut self, block : BasicBlock, var : Var) {
@@ -374,8 +463,8 @@ impl CFG {
     fn compute_doms(&mut self) {
         let n_blocks = self.n_blocks();
 
-        // Initialization: All blocks other than the entry are initialized as
-        // dominated by all blocks.
+        // Initialization: All blocks other than the entry are initialized as dominated by all
+        // blocks.
         {
             let initial_set : BitSet = (0 .. n_blocks).collect();
             for i in 1 .. n_blocks {
@@ -388,12 +477,10 @@ impl CFG {
         // * dom(S0) = {S0}
         // * dom(N)  = {N} \union (forall pred . intersect(dom(pred)))
         //
-        // In words, every node dominates itself, and no other node domintes the
-        // entry.
+        // In words, every node dominates itself, and no other node domintes the entry.
         //
-        // For non-entry node `n`, if `m` dominates all of its predecessors then
-        // it dominates `m`. (remember that every node dominates itself, so it
-        // works when `m` is a predecessor)
+        // For non-entry node `n`, if `m` dominates all of its predecessors then it dominates `m`.
+        // (remember that every node dominates itself, so it works when `m` is a predecessor)
         while self.compute_doms_step() {}
     }
 
@@ -429,14 +516,12 @@ impl CFG {
     /// Compute immediate dominators.
     fn compute_imm_doms(&mut self) {
 
-        // Idea: Say we have `n` dominators. One of them should be the last one
-        // to visit when moving from entry to this node. That one is the
-        // immediate dominator.
+        // Idea: Say we have `n` dominators. One of them should be the last one to visit when
+        // moving from entry to this node. That one is the immediate dominator.
         //
-        // How to find it? Since it's the last dominator to visit, it shouldn't
-        // dominate any other dominators (Otherwise it wouldn't be last one to
-        // visit). So just look at all the dominators, and find the one that
-        // doesn't dominate any others.
+        // How to find it? Since it's the last dominator to visit, it shouldn't dominate any other
+        // dominators (Otherwise it wouldn't be last one to visit). So just look at all the
+        // dominators, and find the one that doesn't dominate any others.
         //
         // (is this the most efficient way though?)
 
@@ -463,8 +548,8 @@ impl CFG {
                     }
                 }
 
-                // it seems like we found a dominator that doesn't dominate any
-                // of the other dominators.
+                // it seems like we found a dominator that doesn't dominate any of the other
+                // dominators.
                 immediate_dom = Some(dom_idx.0);
                 break;
             }
@@ -478,9 +563,8 @@ impl CFG {
 
     /// Compute dominance frontiers.
     fn compute_df(&mut self) {
-        // TODO: I'm using a separate data structure to make borrow checker
-        // happy. There should be a better way -- need to do post-order
-        // traversal while mutating `self`.
+        // TODO: I'm using a separate data structure to make borrow checker happy. There should be
+        // a better way -- need to do post-order traversal while mutating `self`.
 
         let mut dfs : Vec<BitSet> = vec![BitSet::new(); self.n_blocks()];
         self.compute_df_(ENTRY_BLOCK, &mut dfs);
@@ -513,31 +597,13 @@ impl CFG {
 
     /// Insert phi functions.
     fn insert_phis(&mut self) {
-        // definition sites of variables
-        let mut defsites : HashMap<Uniq, HashSet<BasicBlock>> = HashMap::new();
-
-        // all variables defined in the cfg
-        let mut vars : HashSet<Var> = HashSet::new();
-
-        for block in 0 .. self.n_blocks() {
-            for var in self.blocks[block].vars.iter().cloned() {
-                vars.insert(var);
-
-                match defsites.entry(var) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(set!(BasicBlock(block)));
-                    },
-                    Entry::Occupied(mut entry) => {
-                        entry.get_mut().insert(BasicBlock(block));
-                    }
-                }
-            }
-        }
+        // borrow checker problems...
+        let vars = mem::replace(&mut self.vars, HashSet::new());
+        let defsites = mem::replace(&mut self.defsites, HashMap::new());
 
         for var in vars.iter().cloned() {
-
-            // whenever node x contains a definition of some variable a, any
-            // node in the dominance frontier of x needs a phi for a
+            // whenever node x contains a definition of some variable a, any node in the dominance
+            // frontier of x needs a phi for a
             let mut next_workset = defsites.get(&var).unwrap().clone();
             let mut workset : HashSet<BasicBlock> = HashSet::new();
 
@@ -552,8 +618,8 @@ impl CFG {
                         let dom = BasicBlock(dom_);
                         if !self.has_phi(dom, var) {
                             self.insert_phi(dom, var);
-                            // now that `dom` has a new definition, we need to work
-                            // it, to be able to update its dominance frontier
+                            // now that `dom` has a new definition, we need to work it, to be able
+                            // to update its dominance frontier
                             if !defsites.get(&var).unwrap().contains(&dom) {
                                 next_workset.insert(dom);
                             }
@@ -562,12 +628,16 @@ impl CFG {
                 }
             }
         }
+
+        // put borrowed stuff back
+        self.vars = vars;
+        self.defsites = defsites;
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 // Printers
-////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 impl CFG {
     pub fn print(&self, buf : &mut Vec<u8>) {
@@ -600,6 +670,7 @@ impl CFG {
 
 impl BasicBlock_ {
     pub fn print(&self, buf : &mut Vec<u8>) {
+        writeln!(buf, "  phis: {:?}", self.phis).unwrap();
         for stat in self.stats.iter() {
             write!(buf, "  ").unwrap();
             stat.print(buf);
@@ -774,9 +845,9 @@ impl ast::Number {
     }
 }
 
-////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 // Tests
-////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 #[cfg(test)]
 mod test {
