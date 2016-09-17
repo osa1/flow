@@ -5,6 +5,11 @@ extern crate test;
 
 // Macro is here because of macro export bugs
 macro_rules! set {
+    () => {
+        {
+            HashSet::new()
+        }
+    };
     ( $( $x:expr ),* ) => {
         {
             let mut ret = HashSet::new();

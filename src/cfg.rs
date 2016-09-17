@@ -367,6 +367,7 @@ impl<A> CFG<A> {
         BasicBlockIter { bitset_iter: self.blocks[block.0].dom_tree_children.iter() }
     }
 
+    #[cfg(test)]
     fn dom_frontier(&self, block : BasicBlock) -> BasicBlockIter {
         BasicBlockIter { bitset_iter: self.blocks[block.0].dom_frontier.iter() }
     }
