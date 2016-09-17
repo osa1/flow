@@ -1,8 +1,9 @@
 use ast::*;
-use cfg::{BasicBlock, CFGBuilder, CFG, LHS, RHS, Stat, Var, Terminator};
+use cfg::{BasicBlock, OpenCFG, ClosedCFG, Var, Terminator};
 use labels::Labels;
 use lexer::Tok;
 use scoping::{Scopes, VarOcc};
+use stat::{LHS, RHS, Stat};
 use uniq::{ENTRY_UNIQ};
 use utils::Either;
 
@@ -25,10 +26,10 @@ pub struct Parser<'a> {
     labels: Labels,
 
     /// Closure definitions.
-    defs: HashMap<Var, CFG>,
+    defs: HashMap<Var, ClosedCFG>,
 
     /// Current CFG. New statements and basic blocks are added here.
-    cur_cfg: CFGBuilder,
+    cur_cfg: OpenCFG,
 
     /// `Var` for `cur_cfg`. e.g. what definition we are parsing right now.
     cur_var: Var,
@@ -58,18 +59,18 @@ impl<'a> Parser<'a> {
             scopes: Scopes::new(),
             labels: Labels::new(),
             defs: HashMap::new(),
-            cur_cfg: CFGBuilder::new(vec![]),
+            cur_cfg: OpenCFG::new(vec![]),
             cur_var: ENTRY_UNIQ, // special
             loop_conts: vec![],
         }
     }
 
     /// Entry point. Returns list of definitions.
-    pub fn parse(mut self) -> HashMap<Var, CFG> {
+    pub fn parse(mut self) -> HashMap<Var, ClosedCFG> {
         self.block();
         self.expect_tok(Tok::EOS);
         let mut defs = self.defs;
-        let captures = vec![]; // no captures at the top level
+        let captures = HashSet::new(); // no captures at the top level
         defs.insert(self.cur_var, self.cur_cfg.build(captures));
         defs
     }
@@ -132,12 +133,12 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(always)]
-    fn register_def(&mut self, var : Var, cfg : CFG) {
+    fn register_def(&mut self, var: Var, cfg: ClosedCFG) {
         self.defs.insert(var, cfg);
     }
 
     #[inline(always)]
-    fn add_stat(&mut self, stat : Stat) {
+    fn add_stat(&mut self, stat: Stat) {
         self.cur_cfg.add_stat(stat);
     }
 
@@ -200,8 +201,8 @@ impl<'a> Parser<'a> {
     }
 
     #[inline(always)]
-    fn set_bb(&mut self, bb : BasicBlock) {
-        self.cur_cfg.set_bb(bb)
+    fn set_cur_bb(&mut self, bb: BasicBlock) {
+        self.cur_cfg.set_cur_bb(bb)
     }
 
     fn emit_string(&mut self, s : String) -> Var {
@@ -311,7 +312,7 @@ impl<'a> Parser<'a> {
         let then_bb = self.new_bb();
         let else_bb = self.new_bb();
         self.cond_then(then_bb, else_bb, cont_bb);
-        self.set_bb(else_bb);
+        self.set_cur_bb(else_bb);
 
         // if there are no elseif or else blocks then cont_bb is just else_bb
         match self.cur_tok_() {
@@ -319,11 +320,11 @@ impl<'a> Parser<'a> {
             _ => {
                 self.expect_tok(Tok::End);
                 // then_bb was previously jumping to cont_bb, so fix that
-                self.set_bb(then_bb);
+                self.set_cur_bb(then_bb);
                 self.terminate(else_bb);
                 // continuation is not cont_bb because there are not elseif or
                 // else blocks
-                self.set_bb(else_bb);
+                self.set_cur_bb(else_bb);
                 return;
             },
         }
@@ -337,7 +338,7 @@ impl<'a> Parser<'a> {
             let then_bb = self.new_bb();
             let else_bb = self.new_bb();
             self.cond_then(then_bb, else_bb, cont_bb);
-            self.set_bb(else_bb);
+            self.set_cur_bb(else_bb);
         }
 
         // parse optional else block
@@ -348,7 +349,7 @@ impl<'a> Parser<'a> {
         }
 
         self.expect_tok(Tok::End);
-        self.set_bb(cont_bb);
+        self.set_cur_bb(cont_bb);
     }
 
     /// <condition> then <block>
@@ -358,7 +359,7 @@ impl<'a> Parser<'a> {
         self.cond_terminate(cond, then_bb, else_bb);
 
         // then block jumps to the continuation
-        self.set_bb(then_bb);
+        self.set_cur_bb(then_bb);
         self.block();
         self.terminate(cont_bb);
     }
@@ -374,19 +375,19 @@ impl<'a> Parser<'a> {
 
         // start with the condition
         self.terminate(cond_bb);
-        self.set_bb(cond_bb);
+        self.set_cur_bb(cond_bb);
         self.enter_loop(cont_bb);
         let cond = self.exp();
         self.cond_terminate(cond, body_bb, cont_bb);
 
         self.expect_tok(Tok::Do);
-        self.set_bb(body_bb);
+        self.set_cur_bb(body_bb);
         self.block();
         self.terminate(cond_bb); // loop
         self.expect_tok(Tok::End);
 
         self.exit_loop();
-        self.set_bb(cont_bb);
+        self.set_cur_bb(cont_bb);
     }
 
     // <block> end
@@ -432,13 +433,13 @@ impl<'a> Parser<'a> {
 
         // start with the condition
         self.terminate(cond_bb);
-        self.set_bb(cond_bb);
+        self.set_cur_bb(cond_bb);
         self.enter_loop(cont_bb);
         self.assign(LHS::Var(cond_var), RHS::Binop(start, Binop::LT, end));
         self.cond_terminate(cond_var, body_bb, cont_bb);
 
         // body
-        self.set_bb(body_bb);
+        self.set_cur_bb(body_bb);
         self.expect_tok(Tok::Do);
         self.block_();
         self.expect_tok(Tok::End);
@@ -450,7 +451,7 @@ impl<'a> Parser<'a> {
         self.exit_scope();
         self.exit_loop();
 
-        self.set_bb(cont_bb);
+        self.set_cur_bb(cont_bb);
     }
 
     // <name> {,<name>} in <explist> <forbody>
@@ -536,7 +537,7 @@ impl<'a> Parser<'a> {
 
         // jump to the loop body
         self.terminate(body_bb);
-        self.set_bb(body_bb);
+        self.set_cur_bb(body_bb);
         self.enter_loop(cont_bb);
         self.multiassign(vars, vec![RHS::FunCall(f_var, vec![s_var, var])]);
 
@@ -548,7 +549,7 @@ impl<'a> Parser<'a> {
         self.exit_scope();
         self.exit_loop();
 
-        self.set_bb(cont_bb);
+        self.set_cur_bb(cont_bb);
     }
 
     fn repeatstat(&mut self) {
@@ -571,7 +572,7 @@ impl<'a> Parser<'a> {
         self.exit_scope();
         self.exit_loop();
 
-        self.set_bb(cont_bb);
+        self.set_cur_bb(cont_bb);
     }
 
     fn init_closure(&mut self, fun : Var, captures : Vec<Var>) -> Var {
@@ -700,7 +701,7 @@ impl<'a> Parser<'a> {
         self.expect_tok(Tok::DColon);
         let label_bb = self.new_bb();
         self.terminate(label_bb);
-        self.set_bb(label_bb);
+        self.set_cur_bb(label_bb);
         self.labels.label(label, label_bb, &mut self.cur_cfg);
     }
 
@@ -729,7 +730,7 @@ impl<'a> Parser<'a> {
         // statements after break should not be added to the current bb
         let temp_bb = self.new_bb();
         self.terminate(jmp_target);
-        self.set_bb(temp_bb);
+        self.set_cur_bb(temp_bb);
     }
 
     // function call or assignment. Both start with a <suffixedexp>.
@@ -1105,7 +1106,7 @@ impl<'a> Parser<'a> {
 
     /// Compile a function definition to CFG. Also returns captured variables.
     /// Syntax: ( <idlist> [, ...] ) <block> end
-    fn fundef(&mut self, is_method : bool) -> CFG {
+    fn fundef(&mut self, is_method: bool) -> ClosedCFG {
         // TODO: Bind "self"
 
         // collect args
@@ -1133,7 +1134,7 @@ impl<'a> Parser<'a> {
         self.expect_tok(Tok::RParen);
 
         let cfg_args = self.enter_closure(args);
-        let mut fun_cfg = std::mem::replace(&mut self.cur_cfg, CFGBuilder::new(cfg_args));
+        let mut fun_cfg = std::mem::replace(&mut self.cur_cfg, OpenCFG::new(cfg_args));
 
         self.block_();
         std::mem::swap(&mut self.cur_cfg, &mut fun_cfg);
@@ -1151,7 +1152,6 @@ impl<'a> Parser<'a> {
 
 #[cfg(test)]
 mod test_parser {
-    use ast::*;
     use lexer::{Tok, tokenize};
     use parser::Parser;
     use test_utils::*;
@@ -1186,7 +1186,7 @@ mod test_parser {
         let mut tokens = tokenize(&lua).unwrap();
         tokens.push(Tok::EOS);
         b.iter(|| {
-            let mut parser = Parser::new(&tokens);
+            let parser = Parser::new(&tokens);
             parser.parse()
         });
     }

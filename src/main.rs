@@ -12,6 +12,7 @@ mod labels;
 mod lexer;
 mod parser;
 mod scoping;
+mod stat;
 mod uniq;
 // mod var;
 

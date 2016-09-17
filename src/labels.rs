@@ -1,6 +1,6 @@
 //! This module implements the algorithm described in `goto_notes.txt`.
 
-use cfg::{BasicBlock, CFGBuilder, Terminator};
+use cfg::{BasicBlock, OpenCFG, Terminator};
 
 use std::collections::HashMap;
 
@@ -93,12 +93,12 @@ impl Labels {
         self.jumps_to_parent.pop().unwrap();
     }
 
-    pub fn goto(&mut self, lbl: Label, cur_bb: BasicBlock, cfg_builder: &mut CFGBuilder) -> Option<BasicBlock> {
+    pub fn goto(&mut self, lbl: Label, cur_bb: BasicBlock, cfg: &mut OpenCFG) -> Option<BasicBlock> {
         // First, check if we have this label defined in the current scope.
         match self.labels.last_mut().unwrap().get(&lbl) {
             Some(bb) => {
                 // This is the final destination, we don't add the goto to any of the sets.
-                cfg_builder.terminate_bb(cur_bb, Terminator::Jmp(*bb));
+                cfg.terminate_bb(cur_bb, Terminator::Jmp(*bb));
                 return Some(*bb);
             },
             None => { /* keep searching */ }
@@ -117,7 +117,7 @@ impl Labels {
                         scope_depth: self.current_scope_depth,
                         jump_target_depth: parent_depth,
                     });
-                    cfg_builder.terminate_bb(cur_bb, Terminator::Jmp(*bb));
+                    cfg.terminate_bb(cur_bb, Terminator::Jmp(*bb));
                     return Some(*bb);
                 },
                 None => {
@@ -128,7 +128,7 @@ impl Labels {
         }
 
         // We don't know where to jump yet.
-        cfg_builder.terminate_bb(cur_bb, Terminator::Unknown);
+        cfg.terminate_bb(cur_bb, Terminator::Unknown);
         self.unknown_dests.last_mut().unwrap().push(UnknownJump {
             label: lbl,
             bb: cur_bb,
@@ -138,7 +138,7 @@ impl Labels {
         None
     }
 
-    pub fn label(&mut self, lbl: Label, label_bb: BasicBlock, cfg_builder: &mut CFGBuilder) {
+    pub fn label(&mut self, lbl: Label, label_bb: BasicBlock, cfg: &mut OpenCFG) {
         // Was the label defined in the current scope before? Error if so.
         if self.labels.last().unwrap().get(&lbl).is_some() {
             panic!("Label was defined in the current scope before: {}", lbl);
@@ -153,7 +153,7 @@ impl Labels {
             for (idx, unknown_dest) in self.unknown_dests.last_mut().unwrap().iter().enumerate() {
                 if &unknown_dest.label == &lbl {
                     remove_unknown_dests.push(idx);
-                    cfg_builder.terminate_bb(unknown_dest.bb, Terminator::Jmp(label_bb));
+                    cfg.terminate_bb(unknown_dest.bb, Terminator::Jmp(label_bb));
                     if unknown_dest.scope_depth != self.current_scope_depth {
                         debug_assert!(self.current_scope_depth < unknown_dest.scope_depth);
                         // move this to `jumps_to_parent` set
@@ -179,7 +179,7 @@ impl Labels {
             for mut parent_jmp in self.jumps_to_parent.last_mut().unwrap().iter_mut() {
                 debug_assert!(self.current_scope_depth <= parent_jmp.scope_depth);
                 if &parent_jmp.label == &lbl && parent_jmp.jump_target_depth < self.current_scope_depth {
-                    cfg_builder.terminate_bb(parent_jmp.bb, Terminator::Jmp(label_bb));
+                    cfg.terminate_bb(parent_jmp.bb, Terminator::Jmp(label_bb));
                     parent_jmp.jump_target_depth = self.current_scope_depth;
                 }
             }
@@ -197,20 +197,19 @@ impl Labels {
 #[cfg(test)]
 mod test_labels {
     use super::*;
-    use utils;
 
-    use cfg::{CFGBuilder, Terminator};
+    use cfg::{OpenCFG, Terminator};
 
     #[test]
     fn pgm1() {
         // ::x::
         // goto x
         let mut labels = Labels::new();
-        let mut cfg_builder = CFGBuilder::new(vec![]);
+        let mut cfg_builder = OpenCFG::new(vec![]);
 
         let cur_bb = cfg_builder.new_bb();
         let x_bb = cfg_builder.new_bb();
-        cfg_builder.set_bb(cur_bb);
+        cfg_builder.set_cur_bb(cur_bb);
 
         labels.label("x".to_string(), x_bb, &mut cfg_builder);
         assert_eq!(labels.goto("x".to_string(), cur_bb, &mut cfg_builder), Some(x_bb));
@@ -222,11 +221,11 @@ mod test_labels {
         // ::x::
 
         let mut labels = Labels::new();
-        let mut cfg_builder = CFGBuilder::new(vec![]);
+        let mut cfg_builder = OpenCFG::new(vec![]);
 
         let cur_bb = cfg_builder.new_bb();
         let x_bb = cfg_builder.new_bb();
-        cfg_builder.set_bb(cur_bb);
+        cfg_builder.set_cur_bb(cur_bb);
 
         assert_eq!(labels.goto("x".to_string(), cur_bb, &mut cfg_builder), None);
         labels.label("x".to_string(), x_bb, &mut cfg_builder);
@@ -242,11 +241,11 @@ mod test_labels {
         // goto x
 
         let mut labels = Labels::new();
-        let mut cfg_builder = CFGBuilder::new(vec![]);
+        let mut cfg_builder = OpenCFG::new(vec![]);
 
         let cur_bb = cfg_builder.new_bb();
         let x_bb = cfg_builder.new_bb();
-        cfg_builder.set_bb(cur_bb);
+        cfg_builder.set_cur_bb(cur_bb);
 
         labels.label("x".to_string(), x_bb, &mut cfg_builder);
         labels.enter_scope();
@@ -263,11 +262,11 @@ mod test_labels {
         // ::x::
 
         let mut labels = Labels::new();
-        let mut cfg_builder = CFGBuilder::new(vec![]);
+        let mut cfg_builder = OpenCFG::new(vec![]);
 
         let cur_bb = cfg_builder.new_bb();
         let x_bb = cfg_builder.new_bb();
-        cfg_builder.set_bb(cur_bb);
+        cfg_builder.set_cur_bb(cur_bb);
 
         labels.enter_scope();
         assert_eq!(labels.goto("x".to_string(), cur_bb, &mut cfg_builder), None);
@@ -290,19 +289,19 @@ mod test_labels {
         // end
 
         let mut labels = Labels::new();
-        let mut cfg_builder = CFGBuilder::new(vec![]);
+        let mut cfg_builder = OpenCFG::new(vec![]);
 
         let cur_bb = cfg_builder.new_bb();
         let x1_bb = cfg_builder.new_bb();
         let x2_bb = cfg_builder.new_bb();
-        cfg_builder.set_bb(cur_bb);
+        cfg_builder.set_cur_bb(cur_bb);
 
         labels.label("x".to_string(), x1_bb, &mut cfg_builder);
         labels.enter_scope();
         labels.enter_scope();
         assert_eq!(labels.goto("x".to_string(), cur_bb, &mut cfg_builder), Some(x1_bb));
         assert_eq!(cfg_builder.bb_terminator(cur_bb), Terminator::Jmp(x1_bb));
-        cfg_builder.set_bb(cur_bb);
+        cfg_builder.set_cur_bb(cur_bb);
         labels.exit_scope();
         labels.enter_scope();
         labels.label("x".to_string(), x2_bb, &mut cfg_builder);
@@ -324,12 +323,12 @@ mod test_labels {
         // ::x::
 
         let mut labels = Labels::new();
-        let mut cfg_builder = CFGBuilder::new(vec![]);
+        let mut cfg_builder = OpenCFG::new(vec![]);
 
         let cur_bb = cfg_builder.new_bb();
         let x1_bb = cfg_builder.new_bb();
         let x2_bb = cfg_builder.new_bb();
-        cfg_builder.set_bb(cur_bb);
+        cfg_builder.set_cur_bb(cur_bb);
 
         labels.enter_scope();
         labels.enter_scope();

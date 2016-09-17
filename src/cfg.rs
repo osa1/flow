@@ -9,7 +9,9 @@ use std::iter::Iterator;
 use std::mem;
 
 use ast;
+use stat::{Stat, LHS, RHS};
 use uniq::Uniq;
+
 // use utils;
 
 // remove this once macro import/export bug is fixed (originally in utils)
@@ -27,77 +29,93 @@ macro_rules! set {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Basic blocks are kept abstract and only manipulated via the CFG they belong. Internally we don't
-// use this type because we don't get required instances of u32 automatically (no GND).
-#[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
-pub struct BasicBlock(usize);
-
-pub static ENTRY_BLOCK : BasicBlock = BasicBlock(0);
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
-
 /// Variables in CFGs are just Uniqs. Keep a symbol table if you need to attach more information to
 /// the variables.
 pub type Var = Uniq;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
+// Phantom types for open/closed control-flow graphs.
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
-pub struct CFGBuilder {
-    /// INVARIANT: There's at least ENTRY_BLOCK.
+pub struct Open {
+    /// Current basic block. New statemets are added here. Initially this is the entry block.
+    cur_bb: BasicBlock,
+}
+
+pub struct Closed {}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+#[derive(Debug)]
+pub struct CFG<A> {
+    /// INVARIANT: There's at least one basic block: ENTRY_BLOCK.
     blocks: Vec<BasicBlock_>,
 
     /// Arguments of the function.
     args: Vec<Var>,
 
-    /// Current basic block. New statements are added here. Initially the entry block.
-    cur_bb: BasicBlock,
+    /// Captured variables.
+    captures: HashSet<Var>,
 
     /// All variables mentioned in the CFG.
     vars: HashSet<Var>,
 
     /// Definition sites of variables.
     defsites: HashMap<Var, HashSet<BasicBlock>>,
+
+    /// This is either `Open` or `Closed`. `Open` means new statements and basic blocks can be
+    /// added. `Closed` means no additions from the outside.
+    open_closed: A,
 }
+
+/// New basic blocks and statements can be added by the user.
+pub type OpenCFG = CFG<Open>;
+
+/// No additions from the outside.
+pub type ClosedCFG = CFG<Closed>;
 
 #[derive(Debug)]
-pub enum Stat {
-    Assign(LHS, RHS),
+struct BasicBlock_ {
+    /// Statements of this basic block.
+    stats: Vec<Stat>,
 
-    /// (lhss, rhs)
-    MultiAssign(Vec<LHS>, RHS),
+    /// What to do after the last statement in a basic block.
+    term: Terminator,
 
-    // Phi(Var, Vec<Var>),
+    /// Predecessors of this basic block in the CFG.
+    preds: BitSet,
+
+    /// Successors of this basic block in the CFG.
+    succs: BitSet,
+
+    /// Every path from S0 (entry) to this block needs to visit these.
+    dominators: BitSet,
+
+    /// Immediate dominator of the block. `ENTRY_BLOCK` doesn't have one. This gives the parent in
+    /// the dominator tree. Since `ENTRY_BLOCK` is the root, it doesn't have an `immediate_dom`.
+    immediate_dom: Option<usize>,
+
+    /// Blocks that have this block as immediate dominator. This gives children in the dominator
+    /// tree.
+    dom_tree_children: BitSet,
+
+    /// Dominance frontier of this block.
+    dom_frontier: BitSet,
+
+    /// Variables defined in this block.
+    vars: HashSet<Var>,
+
+    /// Phi nodes in this block.
+    phis: HashSet<Var>,
 }
 
-#[derive(Debug, Clone)]
-pub enum LHS {
-    /// Table index
-    Tbl(Var, Var),
+// Basic blocks are kept abstract and only manipulated via the CFG they belong.
+#[derive(PartialEq, Eq, Copy, Clone, Hash, Debug)]
+pub struct BasicBlock(usize);
 
-    /// Variable
-    Var(Var),
+pub static ENTRY_BLOCK : BasicBlock = BasicBlock(0);
 
-    /// Write to a captured varible
-    Captured(Var),
-}
-
-#[derive(Debug, Clone)]
-pub enum RHS {
-    Nil,
-    Var(Var),
-    Bool(bool),
-    Number(ast::Number),
-    String(String),
-    FunCall(Var, Vec<Var>),
-    NewTbl,
-    ReadTbl(Var, Var),
-    Binop(Var, ast::Binop, Var),
-    Unop(ast::Unop, Var),
-
-    /// Value of a captured variable.
-    Captured(Var),
-}
-
+/// What to do after the last statement in a basic block.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Terminator {
     Jmp(BasicBlock),
@@ -110,15 +128,104 @@ pub enum Terminator {
     Unknown,
 }
 
-impl CFGBuilder {
-    pub fn new(args : Vec<Var>) -> CFGBuilder {
-        CFGBuilder {
-            blocks: vec![BasicBlock_::new()],
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+impl OpenCFG {
+    pub fn new(args: Vec<Var>) -> CFG<Open> {
+        let defsites = {
+            let mut defsites = HashMap::new();
+            for arg in args.iter() {
+                let mut arg_set = HashSet::new();
+                arg_set.insert(ENTRY_BLOCK);
+                defsites.insert(*arg, arg_set);
+            }
+            defsites
+        };
+        CFG {
+            blocks: vec![BasicBlock_::mk_entry_block()],
             args: args,
-            cur_bb: ENTRY_BLOCK,
+            captures: HashSet::new(),
             vars: HashSet::new(),
-            defsites: HashMap::new(),
+            defsites: defsites,
+            open_closed: Open { cur_bb: ENTRY_BLOCK },
         }
+    }
+
+    /// Add a statement to the current basic block.
+    pub fn add_stat(&mut self, stat : Stat) {
+        // Take a peek at the statement to update defsites etc.
+        match &stat {
+            &Stat::Assign(ref lhs, ref rhs) => {
+                self.process_stat_lhs(lhs);
+                self.process_stat_rhs(rhs);
+            },
+            &Stat::MultiAssign(ref lhss, ref rhs) => {
+                for lhs in lhss {
+                    self.process_stat_lhs(lhs);
+                }
+                self.process_stat_rhs(rhs);
+            },
+        }
+
+        unsafe { self.blocks.get_unchecked_mut(self.open_closed.cur_bb.0) }.stats.push(stat);
+    }
+
+    /// Terminate current basic block with the given terminator.
+    pub fn terminate(&mut self, term : Terminator) {
+        let cur_bb = self.open_closed.cur_bb;
+        self.terminate_bb(cur_bb, term);
+    }
+
+    /// Terminate a basic block with the given terminator.
+    pub fn terminate_bb(&mut self, bb: BasicBlock, term: Terminator) {
+        match &term {
+            &Terminator::Jmp(dst) => {
+                self.mk_pred(bb, dst);
+            },
+            &Terminator::CondJmp(_, dst1, dst2) => {
+                self.mk_pred(bb, dst1);
+                self.mk_pred(bb, dst2);
+            },
+            &Terminator::Ret(_) => {},
+            &Terminator::Unknown => {},
+        }
+        unsafe { self.blocks.get_unchecked_mut(bb.0) }.term = term;
+    }
+
+    /// Create a fresh basic block.
+    pub fn new_bb(&mut self) -> BasicBlock {
+        let ret = BasicBlock(self.blocks.len());
+        self.blocks.push(BasicBlock_::new());
+        ret
+    }
+
+    /// Set current basic block.
+    pub fn set_cur_bb(&mut self, bb : BasicBlock) {
+        debug_assert!(bb.0 < self.blocks.len());
+        self.open_closed.cur_bb = bb;
+    }
+
+    /// Get the current basic block.
+    pub fn cur_bb(&self) -> BasicBlock {
+        return self.open_closed.cur_bb;
+    }
+
+    /// Finalize the builder and generate a CFG.
+    pub fn build(mut self, captures : HashSet<Var>) -> CFG<Closed> {
+        self.build_();
+        CFG {
+            blocks: self.blocks,
+            args: self.args,
+            captures: captures,
+            vars: self.vars,
+            defsites: self.defsites,
+            open_closed: Closed {},
+        }
+    }
+
+    #[cfg(test)]
+    pub fn bb_terminator(&self, bb: BasicBlock) -> Terminator {
+        self.blocks[bb.0].term.clone()
     }
 
     /// Update variables and defsites.
@@ -143,10 +250,10 @@ impl CFGBuilder {
     fn insert_defsite(&mut self, var: Var) {
         match self.defsites.entry(var) {
             Entry::Vacant(entry) => {
-                entry.insert(set!(self.cur_bb));
+                entry.insert(set!(self.open_closed.cur_bb));
             },
             Entry::Occupied(mut entry) => {
-                entry.get_mut().insert(self.cur_bb);
+                entry.get_mut().insert(self.open_closed.cur_bb);
             },
         }
     }
@@ -184,125 +291,9 @@ impl CFGBuilder {
             },
         }
     }
-
-    /// Add a statement to the current basic block.
-    pub fn add_stat(&mut self, stat : Stat) {
-        // Take a peek at the statement to update defsites etc.
-        match &stat {
-            &Stat::Assign(ref lhs, ref rhs) => {
-                self.process_stat_lhs(lhs);
-                self.process_stat_rhs(rhs);
-            },
-            &Stat::MultiAssign(ref lhss, ref rhs) => {
-                for lhs in lhss {
-                    self.process_stat_lhs(lhs);
-                }
-                self.process_stat_rhs(rhs);
-            },
-        }
-
-        unsafe { self.blocks.get_unchecked_mut(self.cur_bb.0) }.stats.push(stat);
-    }
-
-    /// Terminate current basic block with the given terminator.
-    pub fn terminate(&mut self, term : Terminator) {
-        unsafe { self.blocks.get_unchecked_mut(self.cur_bb.0) }.term = term;
-    }
-
-    pub fn terminate_bb(&mut self, bb: BasicBlock, term: Terminator) {
-        unsafe { self.blocks.get_unchecked_mut(bb.0) }.term = term;
-    }
-
-    /// Create a fresh basic block.
-    pub fn new_bb(&mut self) -> BasicBlock {
-        let ret = BasicBlock(self.blocks.len());
-        self.blocks.push(BasicBlock_::new());
-        ret
-    }
-
-    /// Set current basic block.
-    pub fn set_bb(&mut self, bb : BasicBlock) {
-        debug_assert!(bb.0 < self.blocks.len());
-        self.cur_bb = bb;
-    }
-
-    /// Get the current basic block.
-    pub fn cur_bb(&self) -> BasicBlock {
-        return self.cur_bb;
-    }
-
-    /// Finalize the builder and generate a CFG.
-    pub fn build(self, captures : Vec<Var>) -> CFG {
-        let mut cfg = CFG {
-            blocks: self.blocks,
-            args: self.args,
-            captures: captures,
-            vars: self.vars,
-            defsites: self.defsites,
-        };
-        cfg.build();
-        cfg
-    }
-
-    #[cfg(test)]
-    pub fn bb_terminator(&self, bb: BasicBlock) -> Terminator {
-        self.blocks[bb.0].term.clone()
-    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
-
-#[derive(Debug)]
-pub struct CFG {
-    /// INVARIANT: There's at least one basic block: ENTRY_BLOCK.
-    blocks: Vec<BasicBlock_>,
-
-    /// Arguments of the function.
-    args: Vec<Var>,
-
-    /// Captured variables.
-    captures: Vec<Var>,
-
-    /// All variables mentioned in the CFG.
-    vars: HashSet<Var>,
-
-    /// Definition sites of variables.
-    defsites: HashMap<Var, HashSet<BasicBlock>>,
-}
-
-#[derive(Debug)]
-struct BasicBlock_ {
-    /// Statements of this basic block.
-    stats: Vec<Stat>,
-
-    term: Terminator,
-
-    /// Predecessors of this basic block in the CFG.
-    preds: BitSet,
-
-    /// Successors of this basic block in the CFG.
-    succs: BitSet,
-
-    /// Every path from S0 (entry) to this block needs to visit these.
-    dominators: BitSet,
-
-    /// Immediate dominator of the block. `ENTRY_BLOCK` doesn't have one. This gives the parent in
-    /// the dominator tree. Since `ENTRY_BLOCK` is the root, it doesn't have an `immediate_dom`.
-    immediate_dom: Option<usize>,
-
-    /// Blocks that have this block as immediate dominator. This gives children in the dominator
-    /// tree.
-    dom_tree_children: BitSet,
-
-    /// Dominance frontier of this block.
-    dom_frontier: BitSet,
-
-    /// Variables defined in this block.
-    vars: HashSet<Var>,
-
-    /// Phi nodes in this block.
-    phis: HashSet<Var>,
-}
 
 impl BasicBlock_ {
     pub fn new() -> BasicBlock_ {
@@ -319,6 +310,12 @@ impl BasicBlock_ {
             phis: HashSet::new(),
         }
     }
+
+    pub fn mk_entry_block() -> BasicBlock_ {
+        let mut bb = BasicBlock_::new();
+        bb.dominators.insert(ENTRY_BLOCK.0);
+        bb
+    }
 }
 
 #[derive(Clone)]
@@ -334,68 +331,31 @@ impl<'b> Iterator for BasicBlockIter<'b> {
     }
 }
 
-impl CFG {
-    #[cfg(test)]
-    fn new(args : Vec<Var>) -> CFG {
-        let mut entry_block_doms = BitSet::new();
-        entry_block_doms.insert(ENTRY_BLOCK.0);
-
-        let mut entry_block = BasicBlock_::new();
-        entry_block.dominators = entry_block_doms;
-
-        CFG {
-            blocks: vec![entry_block],
-            args: args,
-            captures: vec![],
-        }
-    }
-
-    #[cfg(test)]
-    pub fn new_block(&mut self) -> BasicBlock {
-        let mut doms = BitSet::new();
-        let ret = self.n_blocks();
-        doms.insert(ret);
-
-        self.blocks.push(BasicBlock_ {
-            stats: Vec::new(),
-            term: Terminator::Ret(vec![]),
-            preds: BitSet::new(),
-            succs: BitSet::new(),
-            dominators: doms,
-            immediate_dom: None,
-            dom_tree_children: BitSet::new(),
-            dom_frontier: BitSet::new(),
-            vars: HashSet::new(),
-            phis: HashSet::new(),
-        });
-
-        BasicBlock(ret)
-    }
-
+impl<A> CFG<A> {
+    /// Get variables captured by the closure.
     pub fn get_captures(&self) -> Vec<Var> {
-        self.captures.clone()
+        self.captures.iter().cloned().collect()
     }
 
     /// Make `node1` a predecessor of `node2`. Also makes `node2` a successor of
     /// `node1`.
-    #[cfg(test)]
-    pub fn mk_pred(&mut self, node1 : BasicBlock, node2 : BasicBlock) {
+    fn mk_pred(&mut self, node1 : BasicBlock, node2 : BasicBlock) {
         self.blocks[node2.0].preds.insert(node1.0);
         self.blocks[node1.0].succs.insert(node2.0);
     }
 
     /// Does `block1` dominate `block2` ?
-    pub fn dominates(&self, block1 : BasicBlock, block2 : BasicBlock) -> bool {
+    fn dominates(&self, block1 : BasicBlock, block2 : BasicBlock) -> bool {
         self.blocks[block2.0].dominators.contains(block1.0)
     }
 
     /// Predecessors of a given node.
-    pub fn preds(&self, block : BasicBlock) -> BasicBlockIter {
+    fn preds(&self, block : BasicBlock) -> BasicBlockIter {
         BasicBlockIter { bitset_iter: self.blocks[block.0].preds.iter() }
     }
 
     /// Successors of a given node.
-    pub fn succs(&self, block : BasicBlock) -> BasicBlockIter {
+    fn succs(&self, block : BasicBlock) -> BasicBlockIter {
         BasicBlockIter { bitset_iter: self.blocks[block.0].succs.iter() }
     }
 
@@ -403,7 +363,7 @@ impl CFG {
     ///
     /// If `d` is a dominator of `n`, every path from entry node to `n` needs to
     /// visit `d`.
-    pub fn dominators(&self, block : BasicBlock) -> BasicBlockIter {
+    fn dominators(&self, block : BasicBlock) -> BasicBlockIter {
         BasicBlockIter { bitset_iter: self.blocks[block.0].dominators.iter() }
     }
 
@@ -412,39 +372,47 @@ impl CFG {
     ///
     /// `d` is immediate dominator of `n` if it's a dominator of `n` and it
     /// doesn't dominate any other dominators of `n`.
-    pub fn immediate_dom(&self, block : BasicBlock) -> BasicBlock {
+    fn immediate_dom(&self, block : BasicBlock) -> BasicBlock {
         BasicBlock(self.blocks[block.0].immediate_dom.unwrap())
     }
 
     /// Children of the node in the dominator tree. TODO: Say more about what's
     /// a dominator tree.
-    pub fn dom_tree_children(&self, block : BasicBlock) -> BasicBlockIter {
+    fn dom_tree_children(&self, block : BasicBlock) -> BasicBlockIter {
         BasicBlockIter { bitset_iter: self.blocks[block.0].dom_tree_children.iter() }
     }
 
-    #[test(cfg)]
-    pub fn dom_frontier(&self, block : BasicBlock) -> BasicBlockIter {
+    fn dom_frontier(&self, block : BasicBlock) -> BasicBlockIter {
         BasicBlockIter { bitset_iter: self.blocks[block.0].dom_frontier.iter() }
     }
 
-    pub fn has_phi(&self, block : BasicBlock, var : Var) -> bool {
+    fn has_phi(&self, block : BasicBlock, var : Var) -> bool {
         self.blocks[block.0].  phis.contains(&var)
     }
 
-    pub fn insert_phi(&mut self, block : BasicBlock, var : Var) {
+    fn insert_phi(&mut self, block : BasicBlock, var : Var) {
         self.blocks[block.0].phis.insert(var);
     }
 
     #[cfg(test)]
-    pub fn add_defined_var(&mut self, block : BasicBlock, var : Var) {
-        self.blocks[block.0].vars.insert(var);
+    fn add_defined_var(&mut self, bb: BasicBlock, var: Var) {
+        self.blocks[bb.0].vars.insert(var);
+        self.vars.insert(var);
+        match self.defsites.entry(var) {
+            Entry::Vacant(entry) => {
+                entry.insert(set!(bb));
+            },
+            Entry::Occupied(mut entry) => {
+                entry.get_mut().insert(bb);
+            },
+        }
     }
 
     /// Compute dominators, dominator tree, dominance frontier etc. DO NOT
     /// query those without calling this first.
     // TODO: We probably need a `CFGBuilder` type that returns an immutable
     // `CFG` type when built.
-    pub fn build(&mut self) {
+    fn build_(&mut self) {
         self.compute_doms();
         self.compute_imm_doms();
         self.compute_df();
@@ -458,7 +426,7 @@ impl CFG {
 
 // Actual computation
 
-impl CFG {
+impl<A> CFG<A> {
     /// Compute dominators.
     fn compute_doms(&mut self) {
         let n_blocks = self.n_blocks();
@@ -639,7 +607,7 @@ impl CFG {
 // Printers
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-impl CFG {
+impl<A> CFG<A> {
     pub fn print(&self, buf : &mut Vec<u8>) {
         write!(buf, "args: ").unwrap();
         let mut first = true;
@@ -858,14 +826,14 @@ mod test {
 
     #[test]
     fn dom_test_1() {
-        let mut cfg = CFG::new(vec![]);
-        let block1 = cfg.new_block();
-        let block2 = cfg.new_block();
+        let mut cfg_builder = OpenCFG::new(vec![]);
+        let block1 = cfg_builder.new_bb();
+        let block2 = cfg_builder.new_bb();
 
-        cfg.mk_pred(ENTRY_BLOCK, block1);
-        cfg.mk_pred(block1, block2);
+        cfg_builder.terminate_bb(ENTRY_BLOCK, Terminator::Jmp(block1));
+        cfg_builder.terminate_bb(block1, Terminator::Jmp(block2));
 
-        cfg.build();
+        let cfg = cfg_builder.build(HashSet::new());
 
         // dominators
         assert_eq!(cfg.dominators(ENTRY_BLOCK).collect::<HashSet<BasicBlock>>(),
@@ -883,19 +851,19 @@ mod test {
     #[test]
     fn dom_test_2() {
         // Figure 18.3 (a)
-        let mut cfg = CFG::new(vec![]);
-        let b1  = cfg.new_block();
-        let b2  = cfg.new_block();
-        let b3  = cfg.new_block();
-        let b4  = cfg.new_block();
-        let b5  = cfg.new_block();
-        let b6  = cfg.new_block();
-        let b7  = cfg.new_block();
-        let b8  = cfg.new_block();
-        let b9  = cfg.new_block();
-        let b10 = cfg.new_block();
-        let b11 = cfg.new_block();
-        let b12 = cfg.new_block();
+        let mut cfg = OpenCFG::new(vec![]);
+        let b1  = cfg.new_bb();
+        let b2  = cfg.new_bb();
+        let b3  = cfg.new_bb();
+        let b4  = cfg.new_bb();
+        let b5  = cfg.new_bb();
+        let b6  = cfg.new_bb();
+        let b7  = cfg.new_bb();
+        let b8  = cfg.new_bb();
+        let b9  = cfg.new_bb();
+        let b10 = cfg.new_bb();
+        let b11 = cfg.new_bb();
+        let b12 = cfg.new_bb();
 
         cfg.mk_pred(ENTRY_BLOCK, b1);
         cfg.mk_pred(b1, b2);
@@ -916,7 +884,7 @@ mod test {
         cfg.mk_pred(b11, b12);
         cfg.mk_pred(b10, b12);
 
-        cfg.build();
+        let cfg = cfg.build(HashSet::new());
 
         // Figure 18.3 (b)
         assert_eq!(cfg.immediate_dom(b1), ENTRY_BLOCK);
@@ -936,14 +904,14 @@ mod test {
     #[test]
     fn dom_test_3() {
         // Figure 19.4
-        let mut cfg = CFG::new(vec![]);
-        let b1  = cfg.new_block();
-        let b2  = cfg.new_block();
-        let b3  = cfg.new_block();
-        let b4  = cfg.new_block();
-        let b5  = cfg.new_block();
-        let b6  = cfg.new_block();
-        let b7  = cfg.new_block();
+        let mut cfg = OpenCFG::new(vec![]);
+        let b1  = cfg.new_bb();
+        let b2  = cfg.new_bb();
+        let b3  = cfg.new_bb();
+        let b4  = cfg.new_bb();
+        let b5  = cfg.new_bb();
+        let b6  = cfg.new_bb();
+        let b7  = cfg.new_bb();
 
         cfg.mk_pred(ENTRY_BLOCK, b1);
         cfg.mk_pred(b1, b2);
@@ -955,7 +923,7 @@ mod test {
         cfg.mk_pred(b6, b7);
         cfg.mk_pred(b7, b2);
 
-        cfg.build();
+        let cfg = cfg.build(HashSet::new());
 
         assert_eq!(cfg.immediate_dom(b1), ENTRY_BLOCK);
         assert_eq!(cfg.immediate_dom(b2), b1);
@@ -984,14 +952,14 @@ mod test {
     #[test]
     fn phi_test_1() {
         // Figure 19.4
-        let mut cfg = CFG::new(vec![]);
-        let b1  = cfg.new_block();
-        let b2  = cfg.new_block();
-        let b3  = cfg.new_block();
-        let b4  = cfg.new_block();
-        let b5  = cfg.new_block();
-        let b6  = cfg.new_block();
-        let b7  = cfg.new_block();
+        let mut cfg = OpenCFG::new(vec![]);
+        let b1  = cfg.new_bb();
+        let b2  = cfg.new_bb();
+        let b3  = cfg.new_bb();
+        let b4  = cfg.new_bb();
+        let b5  = cfg.new_bb();
+        let b6  = cfg.new_bb();
+        let b7  = cfg.new_bb();
 
         cfg.mk_pred(ENTRY_BLOCK, b1);
         cfg.mk_pred(b1, b2);
@@ -1016,7 +984,7 @@ mod test {
         cfg.add_defined_var(b6, var_j);
         cfg.add_defined_var(b6, var_k);
 
-        cfg.build();
+        let cfg = cfg.build(HashSet::new());
 
         assert!(cfg.has_phi(b2, var_j));
         assert!(cfg.has_phi(b2, var_k));

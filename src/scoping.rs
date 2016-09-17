@@ -167,7 +167,6 @@ impl Scopes {
 #[cfg(test)]
 mod test_scoping {
     use super::*;
-    use utils;
 
     use std::collections::HashSet;
 
@@ -213,6 +212,7 @@ mod test_scoping {
 
         // a global variable. make sure this is not captured.
         let global = scopes.var_occ("global");
+        assert!(global.is_global());
 
         scopes.enter_closure(vec![var1.to_string()]);
         scopes.enter_closure(vec![var2.to_string()]);
