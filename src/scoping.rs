@@ -1,4 +1,4 @@
-//! We abstract things related with scoping, variable captures etc. here.
+//! We abstract things related with scoping, variable capturing in closures etc. here.
 
 use cfg::Var;
 use uniq::UniqCounter;
