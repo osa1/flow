@@ -343,4 +343,36 @@ mod test_labels {
         labels.label("x".to_string(), x2_bb, &mut cfg_builder);
         assert_eq!(cfg_builder.bb_terminator(cur_bb), Terminator::Jmp(x2_bb));
     }
+
+    #[test]
+    fn pgm7() {
+        // This should fail:
+        //
+        //     do
+        //         goto x
+        //         do
+        //             ::x::
+        //             print("first")
+        //         end
+        //     end
+        //
+        // (label not visible)
+
+        let mut labels = Labels::new();
+        let mut cfg_builder = OpenCFG::new(vec![]);
+
+        let cur_bb = cfg_builder.new_bb();
+        let x_bb = cfg_builder.new_bb();
+        cfg_builder.set_cur_bb(cur_bb);
+
+        labels.enter_scope();
+        assert_eq!(labels.goto("x".to_string(), cur_bb, &mut cfg_builder), None);
+
+        labels.enter_scope();
+        labels.label("x".to_string(), x_bb, &mut cfg_builder);
+        labels.exit_scope();
+        labels.exit_scope();
+
+        assert_eq!(cfg_builder.bb_terminator(cur_bb), Terminator::Unknown);
+    }
 }
