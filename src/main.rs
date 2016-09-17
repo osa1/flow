@@ -3,8 +3,18 @@
 extern crate bit_set;
 extern crate test;
 
-// exports macros
-mod utils;
+// Macro is here because of macro export bugs
+macro_rules! set {
+    ( $( $x:expr ),* ) => {
+        {
+            let mut ret = HashSet::new();
+            $(
+                ret.insert($x);
+            )*
+            ret
+        }
+    };
+}
 
 mod ast;
 mod cfg;
@@ -14,6 +24,7 @@ mod parser;
 mod scoping;
 mod stat;
 mod uniq;
+mod utils;
 // mod var;
 
 #[cfg(test)]

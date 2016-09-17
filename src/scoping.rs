@@ -170,19 +170,6 @@ mod test_scoping {
 
     use std::collections::HashSet;
 
-    // remove this once macro import/export bug is fixed (originally in utils)
-    macro_rules! set {
-        ( $( $x:expr ),* ) => {
-            {
-                let mut ret = HashSet::new();
-                $(
-                    ret.insert($x);
-                )*
-                ret
-            }
-        };
-    }
-
     #[test]
     fn scoping_1() {
         let mut scopes = Scopes::new();

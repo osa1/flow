@@ -12,21 +12,6 @@ use ast;
 use stat::{Stat, LHS, RHS};
 use uniq::Uniq;
 
-// use utils;
-
-// remove this once macro import/export bug is fixed (originally in utils)
-macro_rules! set {
-    ( $( $x:expr ),* ) => {
-        {
-            let mut ret = HashSet::new();
-            $(
-                ret.insert($x);
-            )*
-            ret
-        }
-    };
-}
-
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// Variables in CFGs are just Uniqs. Keep a symbol table if you need to attach more information to
