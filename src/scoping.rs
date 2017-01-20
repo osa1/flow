@@ -7,8 +7,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 pub struct Scopes {
-    local_scopes: Vec<Scope>,
-    global_scope: Scope,
+    scopes: Vec<Scope>,
     var_gen: UniqCounter,
 }
 
@@ -23,7 +22,7 @@ struct Scope {
 pub enum VarOcc {
     Captured(Var),
     Local(Var),
-    Global(Var),
+    Global(String),
 }
 
 impl VarOcc {
@@ -56,7 +55,7 @@ impl VarOcc {
         match self {
             &VarOcc::Captured(var) => var,
             &VarOcc::Local(var) => var,
-            &VarOcc::Global(var) => var,
+            &VarOcc::Global(_) => panic!("Global var in get_var"),
         }
     }
 }
@@ -64,8 +63,7 @@ impl VarOcc {
 impl Scopes {
     pub fn new() -> Scopes {
         Scopes {
-            local_scopes: vec![],
-            global_scope: Scope { vars: HashMap::new(), captures: None },
+            scopes: vec![Scope { vars: HashMap::new(), captures: None }],
             var_gen: UniqCounter::new(b's'),
         }
     }
@@ -76,7 +74,7 @@ impl Scopes {
 
     /// Enter a new scope.
     pub fn enter(&mut self) {
-        self.local_scopes.push(Scope { vars: HashMap::new(), captures: None });
+        self.scopes.push(Scope { vars: HashMap::new(), captures: None });
     }
 
     /// Enter a closure scope. Closures have an initial set of local variables: arguments.
@@ -91,20 +89,20 @@ impl Scopes {
             env.insert(arg, arg_var);
         }
 
-        self.local_scopes.push(Scope { vars: env, captures: Some(HashSet::new()) });
+        self.scopes.push(Scope { vars: env, captures: Some(HashSet::new()) });
         arg_vars
     }
 
     /// It's an error to exit() when top-most scope is a closure scope.
     pub fn exit(&mut self) {
-        let top = self.local_scopes.pop().unwrap();
+        let top = self.scopes.pop().unwrap();
         if top.captures.is_some() { panic!("Scopes.exit(): In a closure scope."); }
     }
 
     /// It's an error to exit_closure() when top-most scope is not a closure scope.
     /// Returns captured variables.
     pub fn exit_closure(&mut self) -> HashSet<Var> {
-        let top = self.local_scopes.pop().unwrap();
+        let top = self.scopes.pop().unwrap();
         match top.captures {
             Some(captures) => captures,
             None => panic!("Scopes.exit_closure(): In a non-closure scope."),
@@ -114,7 +112,7 @@ impl Scopes {
     /// Declare a local variable.
     pub fn var_decl(&mut self, s : String) -> Var {
         let var = self.fresh_var();
-        self.local_scopes.last_mut().unwrap_or(&mut self.global_scope).vars.insert(s, var);
+        self.scopes.last_mut().unwrap().vars.insert(s, var);
         var
     }
 
@@ -125,7 +123,7 @@ impl Scopes {
             // closures that capture this variable
             let mut closures : Vec<&mut HashSet<Var>> = vec![];
 
-            for scope in self.local_scopes.iter_mut().rev() {
+            for scope in self.scopes.iter_mut().rev() {
                 match scope.vars.get(s).cloned() {
                     Some(var) => {
                         for closure in closures.iter_mut() {
@@ -150,13 +148,7 @@ impl Scopes {
         }
 
         // global variable
-        let var = match self.global_scope.vars.get(s).cloned() {
-            // weird code as a borrow checker workaround
-            Some(var) => { return VarOcc::Global(var); },
-            None => { self.fresh_var() },
-        };
-        self.global_scope.vars.insert(s.to_owned(), var);
-        VarOcc::Global(var)
+        VarOcc::Global(s.to_owned())
     }
 }
 

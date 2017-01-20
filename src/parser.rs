@@ -107,7 +107,7 @@ impl<'a> Parser<'a> {
         match self.scopes.var_occ(s) {
             VarOcc::Captured(var) => LHS::Captured(var),
             VarOcc::Local(var) => LHS::Var(var),
-            VarOcc::Global(var) => LHS::Var(var),
+            VarOcc::Global(var) => LHS::Dynamic(var),
         }
     }
 
@@ -122,6 +122,11 @@ impl<'a> Parser<'a> {
             LHS::Captured(v) => {
                 let ret = self.fresh_var();
                 self.assign(LHS::Var(ret), RHS::Captured(v));
+                ret
+            },
+            LHS::Dynamic(v) => {
+                let ret = self.fresh_var();
+                self.assign(LHS::Var(ret), RHS::Dynamic(v));
                 ret
             }
         }
@@ -583,7 +588,7 @@ impl<'a> Parser<'a> {
         // write the function to the table
         let fun_idx_var = self.fresh_var();
         self.assign(LHS::Var(fun_idx_var), RHS::Number(Number::Int(0)));
-        self.assign(LHS::Tbl(table_var, fun_idx_var), RHS::Var(fun));
+        self.assign(LHS::Tbl(table_var, fun_idx_var), RHS::Function(fun));
 
         // write captured values to the table
         for (capture_idx, captured) in captures.into_iter().enumerate() {

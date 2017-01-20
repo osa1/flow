@@ -224,10 +224,8 @@ impl OpenCFG {
                 self.vars.insert(v);
                 self.insert_defsite(v);
             },
-            &LHS::Captured(v) => {
-                self.vars.insert(v);
-                self.insert_defsite(v);
-            },
+            &LHS::Captured(_) => {},
+            &LHS::Dynamic(_) => {}
         }
     }
 
@@ -271,9 +269,9 @@ impl OpenCFG {
             &RHS::Unop(_, v1) => {
                 self.vars.insert(v1);
             },
-            &RHS::Captured(v) => {
-                self.vars.insert(v);
-            },
+            &RHS::Captured(_) => {},
+            &RHS::Dynamic(_) => {},
+            &RHS::Function(_) => {},
         }
     }
 }
@@ -558,7 +556,20 @@ impl<A> CFG<A> {
         for var in vars.iter().cloned() {
             // whenever node x contains a definition of some variable a, any node in the dominance
             // frontier of x needs a phi for a
-            let mut next_workset = defsites.get(&var).unwrap().clone();
+
+            // let mut next_workset = defsites.get(&var).unwrap().clone();
+            let mut next_workset =
+                match defsites.get(&var) {
+                    None => {
+                        for bb in self.blocks.iter() {
+                            println!("{:?}", bb);
+                        }
+
+                        panic!("Var doesn't have a defsite: {:?}\n defsites: {:?}", var, defsites);
+                    },
+                    Some(defsites) => defsites.clone()
+                };
+
             let mut workset : HashSet<BasicBlock> = HashSet::new();
 
             while !next_workset.is_empty() {
@@ -704,6 +715,9 @@ impl LHS {
             &LHS::Captured(var) => {
                 write!(buf, "env[{:?}]", var).unwrap();
             }
+            &LHS::Dynamic(ref var) => {
+                write!(buf, "dynenv[{:?}]", var).unwrap();
+            }
         }
     }
 }
@@ -744,6 +758,12 @@ impl RHS {
             },
             &RHS::Captured(var) => {
                 write!(buf, "env[{:?}]", var).unwrap();
+            },
+            &RHS::Dynamic(ref var) => {
+                write!(buf, "dynenv[{:?}]", var).unwrap();
+            },
+            &RHS::Function(var) => {
+                write!(buf, "function[{:?}]", var).unwrap();
             }
         }
     }

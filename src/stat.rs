@@ -21,12 +21,17 @@ pub enum LHS {
 
     /// Write to a captured varible
     Captured(Var),
+
+    /// An index in dynamic environment
+    Dynamic(String),
 }
 
 #[derive(Debug, Clone)]
 pub enum RHS {
     Nil,
     Var(Var),
+    Dynamic(String),
+    Function(Var),
     Bool(bool),
     Number(Number),
     String(String),
