@@ -152,21 +152,25 @@ impl<'a> Parser<'a> {
         self.add_stat(Stat::Assign(lhs, rhs));
     }
 
-    #[inline(always)]
     fn multiassign(&mut self, mut lhss : Vec<LHS>, rhss : Vec<RHS>) {
         let n_lhss = lhss.len();
         let n_rhss = rhss.len();
 
         if n_lhss > n_rhss {
-            // last assignment will be a multi assign
-            // TODO: remove clone()s
             if n_rhss > 0 {
+                // last assignment will be a multi assign
                 for i in 0 .. n_rhss - 1 {
                     self.assign(lhss[i].clone(), rhss[i].clone());
                 }
                 // last one is a multi assign
                 for _ in lhss.drain(0 .. n_rhss - 1) {} // ugh
                 self.add_stat(Stat::MultiAssign(lhss, rhss[rhss.len() - 1].clone()));
+            } else {
+                // local declarations, variables will be initialized as nil
+                // note that this is valid because empty rhss means this is a local declaration
+                for lhs in lhss {
+                    self.add_stat(Stat::Assign(lhs, RHS::Nil));
+                }
             }
         } else {
             for (lhs, rhs) in lhss.into_iter().zip(rhss.into_iter()) {
