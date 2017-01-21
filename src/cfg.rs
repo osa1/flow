@@ -10,7 +10,7 @@ use std::mem;
 
 use ast;
 use stat::{Stat, LHS, RHS};
-use uniq::Uniq;
+use uniq::{Uniq, VARARG_UNIQ};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -556,6 +556,10 @@ impl<A> CFG<A> {
         for var in vars.iter().cloned() {
             // whenever node x contains a definition of some variable a, any node in the dominance
             // frontier of x needs a phi for a
+
+            // do not try to insert phi nodes for varargs: varargs are function arguments and
+            // they're immutable
+            if var == VARARG_UNIQ { continue; }
 
             // let mut next_workset = defsites.get(&var).unwrap().clone();
             let mut next_workset =

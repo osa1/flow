@@ -16,6 +16,9 @@ struct Scope {
 
     /// Only available in closure scopes.
     captures: Option<HashSet<Var>>,
+
+    /// Whether this scope has varargs bound.
+    varargs: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -63,7 +66,7 @@ impl VarOcc {
 impl Scopes {
     pub fn new() -> Scopes {
         Scopes {
-            scopes: vec![Scope { vars: HashMap::new(), captures: None }],
+            scopes: vec![Scope { vars: HashMap::new(), captures: None, varargs: false }],
             var_gen: UniqCounter::new(b's'),
         }
     }
@@ -74,11 +77,11 @@ impl Scopes {
 
     /// Enter a new scope.
     pub fn enter(&mut self) {
-        self.scopes.push(Scope { vars: HashMap::new(), captures: None });
+        self.scopes.push(Scope { vars: HashMap::new(), captures: None, varargs: false });
     }
 
     /// Enter a closure scope. Closures have an initial set of local variables: arguments.
-    pub fn enter_closure(&mut self, args : Vec<String>) -> Vec<Var> {
+    pub fn enter_closure(&mut self, args : Vec<String>, varargs: bool) -> Vec<Var> {
         let mut env = HashMap::new();
 
         // bind arguments
@@ -89,7 +92,7 @@ impl Scopes {
             env.insert(arg, arg_var);
         }
 
-        self.scopes.push(Scope { vars: env, captures: Some(HashSet::new()) });
+        self.scopes.push(Scope { vars: env, captures: Some(HashSet::new()), varargs: varargs });
         arg_vars
     }
 
@@ -116,7 +119,8 @@ impl Scopes {
         var
     }
 
-    /// Find an occurence of a variable.
+    /// Find occurence of a variable. All variables are bound, except varargs. Varargs are only
+    /// bound when a closure binds them. TODO: We currently panic when that happens.
     pub fn var_occ(&mut self, s : &str) -> VarOcc {
         // search local variables first
         {
@@ -140,7 +144,7 @@ impl Scopes {
                             &mut Some(ref mut captures) => {
                                 closures.push(captures);
                             },
-                            &mut None => { /* nothing to do */ },
+                            &mut None => { /* not a closure */ },
                         }
                     },
                 }
@@ -168,7 +172,7 @@ mod test_scoping {
         let var1 = scopes.var_occ("var1");
         scopes.enter();
         let var2 = scopes.var_decl("var2".to_string());
-        scopes.enter_closure(vec![]);
+        scopes.enter_closure(vec![], false);
 
         let occ1 = scopes.var_occ("var2");
         assert_eq!(occ1, VarOcc::Captured(var2));
@@ -193,9 +197,9 @@ mod test_scoping {
         let global = scopes.var_occ("global");
         assert!(global.is_global());
 
-        scopes.enter_closure(vec![var1.to_string()]);
-        scopes.enter_closure(vec![var2.to_string()]);
-        scopes.enter_closure(vec![var3.to_string()]);
+        scopes.enter_closure(vec![var1.to_string()], false);
+        scopes.enter_closure(vec![var2.to_string()], false);
+        scopes.enter_closure(vec![var3.to_string()], false);
 
         let occ1 = scopes.var_occ(var1);
         assert!(occ1.is_captured());
@@ -220,6 +224,40 @@ mod test_scoping {
 
         let occ6 = scopes.var_occ(var1);
         assert!(occ6.is_local());
+
+        let captures = scopes.exit_closure();
+        assert_eq!(captures, set![]);
+    }
+
+    #[test]
+    fn redefinitions_1() {
+        let mut scopes = Scopes::new();
+
+        let var1 = "var1";
+
+        scopes.var_decl(var1.to_string());
+        scopes.enter_closure(vec![], false);
+        assert!(scopes.var_occ(&var1).is_captured());
+        scopes.var_decl(var1.to_string());
+        assert!(scopes.var_occ(&var1).is_local());
+    }
+
+    #[test]
+    fn redefinitions_2() {
+        let mut scopes = Scopes::new();
+
+        let var1 = "var1";
+
+        scopes.var_decl(var1.to_string());
+        scopes.enter_closure(vec![], false);
+        scopes.var_decl(var1.to_string());
+        scopes.enter_closure(vec![], false);
+
+        let occ1 = scopes.var_occ(var1);
+        assert!(occ1.is_captured());;
+
+        let captures = scopes.exit_closure();
+        assert_eq!(captures, set![occ1.get_var()]);
 
         let captures = scopes.exit_closure();
         assert_eq!(captures, set![]);

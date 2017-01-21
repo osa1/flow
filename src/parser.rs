@@ -4,7 +4,7 @@ use labels::Labels;
 use lexer::Tok;
 use scoping::{Scopes, VarOcc};
 use stat::{LHS, RHS, Stat};
-use uniq::{ENTRY_UNIQ};
+use uniq::{ENTRY_UNIQ, VARARG_UNIQ};
 use utils::Either;
 
 use std::collections::HashMap;
@@ -250,9 +250,9 @@ impl<'a> Parser<'a> {
         self.scopes.exit();
     }
 
-    fn enter_closure(&mut self, args: Vec<String>) -> Vec<Var> {
+    fn enter_closure(&mut self, args: Vec<String>, varargs: bool) -> Vec<Var> {
         self.labels.enter_closure();
-        self.scopes.enter_closure(args)
+        self.scopes.enter_closure(args, varargs)
     }
 
     fn exit_closure(&mut self) -> HashSet<Var> {
@@ -852,8 +852,7 @@ impl<'a> Parser<'a> {
             Tok::Nil => { self.skip(); self.emit_nil() },
             Tok::True => { self.skip(); self.emit_bool(true) }
             Tok::False => { self.skip(); self.emit_bool(false) }
-            // Tok::Ellipsis => { panic!("... is not yet supported ") }
-            Tok::Ellipsis => { self.skip(); self.fresh_var() } // TODO
+            Tok::Ellipsis => { self.skip(); VARARG_UNIQ }
             Tok::LBrace => { self.skip(); self.constructor() },
             Tok::Function => {
                 self.skip(); // skip function
@@ -1117,6 +1116,7 @@ impl<'a> Parser<'a> {
         // collect args
         self.expect_tok(Tok::LParen);
         let mut args : Vec<String> = Vec::new();
+        let mut varargs = false;
         if self.cur_tok_() != &Tok::RParen {
             if self.cur_tok_() == &Tok::Ellipsis {
                 self.skip(); // skip ...
@@ -1129,6 +1129,7 @@ impl<'a> Parser<'a> {
                     if self.cur_tok_() == &Tok::Ellipsis {
                         self.skip(); // skip ...
                         // we should break here as vararg has to be the last arg
+                        varargs = true;
                         break;
                     } else {
                         args.push(self.name());
@@ -1138,7 +1139,7 @@ impl<'a> Parser<'a> {
         }
         self.expect_tok(Tok::RParen);
 
-        let cfg_args = self.enter_closure(args);
+        let cfg_args = self.enter_closure(args, varargs);
         let mut fun_cfg = std::mem::replace(&mut self.cur_cfg, OpenCFG::new(cfg_args));
 
         self.block_();
