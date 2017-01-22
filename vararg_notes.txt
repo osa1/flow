@@ -1,0 +1,139 @@
+===============
+The vararg rule
+===============
+
+From user manual section 3.4:
+
+> If an expression is used as the last (or the only) element of a list of
+> expressions, then no adjustment is made (unless the expression is enclosed in
+> parentheses). In all other contexts, Lua adjusts the result list to one
+> element, either discarding all values except the first one or adding a single
+> nil if there are no values.
+
+Example:
+
+    > function f()
+    >     return 1, 2, 3
+    > end
+    > x, y, z = f()
+    > print(x)
+    1
+    > print(y)
+    2
+    > print(z)
+    3
+
+    > x, y, z = (f())
+    > print(x)
+    1
+    > print(y)
+    nil
+    > print(z)
+    nil
+
+    > function f(...)
+    >     print((...)) -- note the extra parens!
+    > end
+    > print(f(1, 2, 3))
+    1
+
+More examples, from the user manual:
+
+    f()                -- adjusted to 0 results
+    g(f(), x)          -- f() is adjusted to 1 result
+    g(x, f())          -- g gets x plus all results from f()
+    a,b,c = f(), x     -- f() is adjusted to 1 result (c gets nil)
+    a,b = ...          -- a gets the first vararg parameter, b gets
+                       -- the second (both a and b can get nil if there
+                       -- is no corresponding vararg parameter)
+
+    a,b,c = x, f()     -- f() is adjusted to 2 results
+    a,b,c = f()        -- f() is adjusted to 3 results
+    return f()         -- returns all results from f()
+    return ...         -- returns all received vararg parameters
+    return x,y,f()     -- returns x, y, and all results from f()
+    {f()}              -- creates a list with all results from f()
+    {...}              -- creates a list with all vararg parameters
+    {f(), nil}         -- f() is adjusted to 1 result
+
+In addition, it's always safe to pass more or less number of arguments to a
+function than its definition expects:
+
+    > function f(x, y)
+    >     print(x)
+    > end
+    > f()
+    nil
+    > f(1)
+    1
+    > f(1, 2, 3)
+    1
+
+So how do we compile this? I checked PUC-Lua. It has two instructions for
+function calls and returns. Before moving on to instructions, here's a few words
+about them: an instruction in PUC-Lua is 32-bit integer. Lowest 6 bits specify
+opcode, next 8 bits is argument A, next 9 bits are argument B, the rest is
+argument C. So the layout is (in big-endian notation)
+
+    <9-bit C> <9-bit B> <8-bit A> <6-bit opcode>
+
+=======
+OP_CALL
+=======
+
+This is used for function calls. I don't understand how argument A is used (it's
+not used in the main VM loop at `luaV_execute`). Argument B is called `nparams`
+in `luaV_execute`, it's either `LUA_MULTRET`, which means unknown number of
+arguments passed (e.g. `f(x, y, ...)`), or number of arguments. Argument C is
+called `nresults` and specifies how many values will be returned from the callee
+(for some reason this argument is always set as 2 by the parser... not sure
+why).
+
+=========
+OP_RETURN
+=========
+
+This is used for returning. Argument A is called `first`, argument B is called
+`nret`. Argument C is unused. B is `LUA_MULTRET` when returning multiple values.
+I guess (but can't verify) that `A` is either the return value itself, or number
+of returned values in case `B` is `LUA_MULTRET`. `luaV_execute` doesn't use
+argument A directly so it's hard to figure out.
+
+
+
+In short, we need to know
+
+1. How many values caller is expecting.
+2. How many values callee returned.
+3. How many arguments caller passed.
+4. How many arguments callee is expecting.
+
+
+For returning, in the call site, we can compare (1) and (2):
+
+    if (1) >= (2) {
+        move (1) - (2) return values to their locations
+        move `nil` to rest of the locations
+    } else {
+        move (1) return values to their locations
+        pop the stack (2) - (1) times
+    }
+
+For passing, in the caller, we can compare (3) and (4) similarly..
+
+(2) should be in a return register. I think most of the time (1) is statically
+known, e.g. in `local x = f(1, 2)` we know that (1) is 1. In cases like
+
+    f(x())
+
+where f is defined like
+
+    function f(...)
+        <code>
+    end
+
+We need to move value of "number of returned values" register to "number of
+arguments passed" register (i.e. (2) to (3)) before calling `f`.
+
+(4) will be used in the callee's code, so it'll be statically known (unless, of
+course, we decide to use it in caller's code for some reason).
